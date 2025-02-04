@@ -18,7 +18,13 @@ import io.legado.app.lib.theme.bottomBackground
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.searchContent.SearchResult
-import io.legado.app.utils.*
+import io.legado.app.utils.ColorUtils
+import io.legado.app.utils.activity
+import io.legado.app.utils.invisible
+import io.legado.app.utils.loadAnimation
+import io.legado.app.utils.navigationBarGravity
+import io.legado.app.utils.navigationBarHeight
+import io.legado.app.utils.visible
 import splitties.views.bottomPadding
 import splitties.views.leftPadding
 import splitties.views.padding
@@ -42,6 +48,7 @@ class SearchMenu @JvmOverloads constructor(
         Selector.colorBuild().setDefaultColor(bgColor)
             .setPressedColor(ColorUtils.darkenColor(bgColor)).create()
     private var onMenuOutEnd: (() -> Unit)? = null
+    private var isMenuOutAnimating = false
 
     private val searchResultList: MutableList<SearchResult> = mutableListOf()
     private var currentSearchResultIndex: Int = -1
@@ -52,6 +59,7 @@ class SearchMenu @JvmOverloads constructor(
         get() = searchResultList.getOrNull(currentSearchResultIndex)
     val previousSearchResult: SearchResult?
         get() = searchResultList.getOrNull(lastSearchResultIndex)
+    val bottomMenuVisible get() = isVisible && binding.llBottomMenu.isVisible
 
     init {
         initAnimation()
@@ -88,18 +96,18 @@ class SearchMenu @JvmOverloads constructor(
 
     fun runMenuIn() {
         this.visible()
-        binding.llSearchBaseInfo.visible()
-        binding.llBottomBg.visible()
+        binding.llBottomMenu.visible()
         binding.vwMenuBg.visible()
-        binding.llSearchBaseInfo.startAnimation(menuBottomIn)
-        binding.llBottomBg.startAnimation(menuBottomIn)
+        binding.llBottomMenu.startAnimation(menuBottomIn)
     }
 
     fun runMenuOut(onMenuOutEnd: (() -> Unit)? = null) {
+        if (isMenuOutAnimating) {
+            return
+        }
         this.onMenuOutEnd = onMenuOutEnd
         if (this.isVisible) {
-            binding.llSearchBaseInfo.startAnimation(menuBottomOut)
-            binding.llBottomBg.startAnimation(menuBottomOut)
+            binding.llBottomMenu.startAnimation(menuBottomOut)
         }
     }
 
@@ -210,12 +218,13 @@ class SearchMenu @JvmOverloads constructor(
         //隐藏菜单
         menuBottomOut.setAnimationListener(object : Animation.AnimationListener {
             override fun onAnimationStart(animation: Animation) {
+                isMenuOutAnimating = true
                 binding.vwMenuBg.setOnClickListener(null)
             }
 
             override fun onAnimationEnd(animation: Animation) {
-                binding.llSearchBaseInfo.invisible()
-                binding.llBottomBg.invisible()
+                isMenuOutAnimating = false
+                binding.llBottomMenu.invisible()
                 binding.vwMenuBg.invisible()
                 binding.vwMenuBg.setOnClickListener { runMenuOut() }
 
@@ -235,6 +244,8 @@ class SearchMenu @JvmOverloads constructor(
         fun exitSearchMenu()
         fun showMenuBar()
         fun navigateToSearch(searchResult: SearchResult, index: Int)
+        fun onMenuShow()
+        fun onMenuHide()
     }
 
 }

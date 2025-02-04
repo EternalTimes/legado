@@ -1,10 +1,18 @@
 package io.legado.app.data.dao
 
-import androidx.room.*
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.data.entities.BookSource
+import io.legado.app.help.book.isNotShelf
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 @Dao
 interface BookDao {
@@ -19,6 +27,8 @@ interface BookDao {
             BookGroup.IdLocalNone -> flowLocalNoGroup()
             BookGroup.IdError -> flowUpdateError()
             else -> flowByUserGroup(groupId)
+        }.map { list ->
+            list.filterNot { it.isNotShelf }
         }
     }
 
@@ -81,6 +91,11 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE name = :name and author = :author")
     fun getBook(name: String, author: String): Book?
 
+    @Query("""select distinct bs.* from books, book_sources bs 
+        where origin == bookSourceUrl and origin not like '${BookType.localTag}%' 
+        and origin not like '${BookType.webDavTag}%'""")
+    fun getAllUseBookSource(): List<BookSource>
+
     @Query("SELECT * FROM books WHERE name = :name and origin = :origin")
     fun getBookByOrigin(name: String, origin: String): Book?
 
@@ -117,8 +132,11 @@ interface BookDao {
     @Query("select 1 from books where bookUrl = :bookUrl")
     fun has(bookUrl: String): Boolean?
 
-    @Query("select 1 from books where originName = :fileName or origin like '%' || :fileName")
-    fun hasFile(fileName: String): Boolean?
+    @Query(
+        """select exists(select 1 from books where type & ${BookType.local} > 0 
+        and (originName = :fileName or (origin != '${BookType.localTag}' and origin like '%' || :fileName)))"""
+    )
+    fun hasFile(fileName: String): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(vararg book: Book)
@@ -137,4 +155,7 @@ interface BookDao {
 
     @Query("update books set `group` = `group` - :group where `group` & :group > 0")
     fun removeGroup(group: Long)
+
+    @Query("delete from books where type & ${BookType.notShelf} > 0")
+    fun deleteNotShelfBook()
 }

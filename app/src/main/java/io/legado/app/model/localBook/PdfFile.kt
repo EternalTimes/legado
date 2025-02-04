@@ -8,7 +8,11 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.getLocalUri
-import io.legado.app.utils.*
+import io.legado.app.utils.BitmapUtils
+import io.legado.app.utils.FileUtils
+import io.legado.app.utils.SystemUtils
+import io.legado.app.utils.isContentScheme
+import io.legado.app.utils.printOnDebug
 import splitties.init.appCtx
 import java.io.File
 import java.io.FileOutputStream
@@ -70,28 +74,8 @@ class PdfFile(var book: Book) {
             return field
         }
 
-
     init {
-        try {
-            pdfRenderer?.let { renderer ->
-                if (book.coverUrl.isNullOrEmpty()) {
-                    book.coverUrl = LocalBook.getCoverPath(book)
-                }
-                if (!File(book.coverUrl!!).exists()) {
-
-                    FileOutputStream(FileUtils.createFileIfNotExist(book.coverUrl!!)).use { out ->
-                        openPdfPage(renderer, 0)?.let { cover ->
-                            cover.compress(Bitmap.CompressFormat.JPEG, 90, out)
-                        }
-                        out.flush()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            AppLog.put("加载书籍封面失败\n${e.localizedMessage}", e)
-            e.printOnDebug()
-        }
-
+        upBookCover(true)
     }
 
     /**
@@ -159,7 +143,7 @@ class PdfFile(var book: Book) {
 
                 buildString {
                     val start = chapter.index * PAGE_SIZE
-                    val end = Math.min((chapter.index + 1) * PAGE_SIZE, renderer.pageCount)
+                    val end = ((chapter.index + 1) * PAGE_SIZE).coerceAtMost(renderer.pageCount)
                     (start until end).forEach {
                         append("<img src=").append('"').append(it).append('"').append(" >")
                             .append('\n')
@@ -208,11 +192,32 @@ class PdfFile(var book: Book) {
         return chapterList
     }
 
+    private fun upBookCover(fastCheck: Boolean = false) {
+        try {
+            pdfRenderer?.let { renderer ->
+                if (book.coverUrl.isNullOrEmpty()) {
+                    book.coverUrl = LocalBook.getCoverPath(book)
+                }
+                if (fastCheck && File(book.coverUrl!!).exists()) {
+                    return
+                }
+                FileOutputStream(FileUtils.createFileIfNotExist(book.coverUrl!!)).use { out ->
+                    openPdfPage(renderer, 0)?.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                    out.flush()
+                }
+            }
+        } catch (e: Exception) {
+            AppLog.put("加载书籍封面失败\n${e.localizedMessage}", e)
+            e.printOnDebug()
+        }
+    }
+
     private fun upBookInfo() {
         if (pdfRenderer == null) {
             pFile = null
             book.intro = "书籍导入异常"
         } else {
+            upBookCover()
             if (book.name.isEmpty()) {
                 book.name = book.originName.replace(".pdf", "")
             }

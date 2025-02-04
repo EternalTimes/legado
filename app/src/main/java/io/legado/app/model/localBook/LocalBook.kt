@@ -3,7 +3,7 @@ package io.legado.app.model.localBook
 import android.net.Uri
 import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
-import com.script.SimpleBindings
+import com.script.ScriptBindings
 import com.script.rhino.RhinoScriptEngine
 import io.legado.app.R
 import io.legado.app.constant.*
@@ -24,7 +24,6 @@ import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.utils.*
 import kotlinx.coroutines.runBlocking
 import org.apache.commons.text.StringEscapeUtils
-import org.jsoup.nodes.Entities
 import splitties.init.appCtx
 import java.io.*
 import java.util.regex.Pattern
@@ -77,13 +76,13 @@ object LocalBook {
             }
             val file = File(uri.path!!)
             if (file.exists()) {
-                return@runCatching File(uri.path!!).lastModified()
+                return@runCatching file.lastModified()
             }
             throw FileNotFoundException("${uri.path} 文件不存在")
         }
     }
 
-    @Throws(Exception::class)
+    @Throws(TocEmptyException::class)
     fun getChapterList(book: Book): ArrayList<BookChapter> {
         val chapters = when {
             book.isEpub -> {
@@ -98,6 +97,10 @@ object LocalBook {
                 PdfFile.getChapterList(book)
             }
 
+            book.isMobi -> {
+                MobiFile.getChapterList(book)
+            }
+
             else -> {
                 TextFile.getChapterList(book)
             }
@@ -106,7 +109,9 @@ object LocalBook {
             throw TocEmptyException(appCtx.getString(R.string.chapter_list_empty))
         }
         val list = ArrayList(LinkedHashSet(chapters))
-        list.forEachIndexed { index, bookChapter -> bookChapter.index = index }
+        list.forEachIndexed { index, bookChapter ->
+            bookChapter.index = index
+        }
         book.latestChapterTitle = list.last().title
         book.totalChapterNum = list.size
         book.save()
@@ -128,6 +133,10 @@ object LocalBook {
                     PdfFile.getContent(book, chapter)
                 }
 
+                book.isMobi -> {
+                    MobiFile.getContent(book, chapter)
+                }
+
                 else -> {
                     TextFile.getContent(book, chapter)
                 }
@@ -138,8 +147,11 @@ object LocalBook {
             "获取本地书籍内容失败\n${e.localizedMessage}"
         }
         if (book.isEpub) {
-            content = content?.replace("&lt;img", "&lt; img", true) ?: return null
-            return StringEscapeUtils.unescapeHtml4(content)
+            content ?: return null
+            if (content.indexOf('&') > -1) {
+                content = content.replace("&lt;img", "&lt; img", true)
+                return StringEscapeUtils.unescapeHtml4(content)
+            }
         }
         return content
     }
@@ -187,19 +199,27 @@ object LocalBook {
                 name = nameAuthor.first,
                 author = nameAuthor.second,
                 originName = fileName,
-                coverUrl = getCoverPath(bookUrl),
                 latestChapterTime = updateTime,
                 order = appDb.bookDao.minOrder - 1
             )
-            if (book.isEpub) EpubFile.upBookInfo(book)
-            if (book.isUmd) UmdFile.upBookInfo(book)
-            if (book.isPdf) PdfFile.upBookInfo(book)
+            upBookInfo(book)
             appDb.bookDao.insert(book)
         } else {
+            deleteBook(book, false)
+            upBookInfo(book)
             //已有书籍说明是更新,删除原有目录
             appDb.bookChapterDao.delByBook(bookUrl)
         }
         return book
+    }
+
+    fun upBookInfo(book: Book) {
+        when {
+            book.isEpub -> EpubFile.upBookInfo(book)
+            book.isUmd -> UmdFile.upBookInfo(book)
+            book.isPdf -> PdfFile.upBookInfo(book)
+            book.isMobi -> MobiFile.upBookInfo(book)
+        }
     }
 
     /* 导入压缩包内的书籍 */
@@ -273,7 +293,7 @@ object LocalBook {
                     AppConfig.bookImportFileName + "\nJSON.stringify({author:author,name:name})"
                 //在脚本中定义如何分解文件名成书名、作者名
                 val jsonStr = RhinoScriptEngine.run {
-                    val bindings = SimpleBindings()
+                    val bindings = ScriptBindings()
                     bindings["src"] = tempFileName
                     eval(js, bindings)
                 }.toString()
@@ -305,6 +325,9 @@ object LocalBook {
     fun deleteBook(book: Book, deleteOriginal: Boolean) {
         kotlin.runCatching {
             BookHelp.clearCache(book)
+            if (!book.coverUrl.isNullOrEmpty()) {
+                FileUtils.delete(book.coverUrl!!)
+            }
             if (deleteOriginal) {
                 if (book.bookUrl.isContentScheme()) {
                     val uri = Uri.parse(book.bookUrl)

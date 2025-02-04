@@ -7,9 +7,9 @@ import android.text.format.DateUtils
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ViewGroup
-import android.widget.EditText
 import androidx.activity.addCallback
 import androidx.activity.viewModels
+import androidx.core.view.ViewCompat
 import androidx.core.view.postDelayed
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
@@ -35,6 +35,7 @@ import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.service.BaseReadAloudService
+import io.legado.app.ui.about.CrashLogsDialog
 import io.legado.app.ui.main.bookshelf.BaseBookshelfFragment
 import io.legado.app.ui.main.bookshelf.style1.BookshelfFragment1
 import io.legado.app.ui.main.bookshelf.style2.BookshelfFragment2
@@ -42,11 +43,19 @@ import io.legado.app.ui.main.explore.ExploreFragment
 import io.legado.app.ui.main.my.MyFragment
 import io.legado.app.ui.main.rss.RssFragment
 import io.legado.app.ui.widget.dialog.TextDialog
-import io.legado.app.utils.*
+import io.legado.app.utils.hideSoftInput
+import io.legado.app.utils.isCreated
+import io.legado.app.utils.navigationBarHeight
+import io.legado.app.utils.observeEvent
+import io.legado.app.utils.setEdgeEffectColor
+import io.legado.app.utils.shouldHideSoftInput
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import splitties.views.bottomPadding
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -81,15 +90,9 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         upBottomMenu()
-        binding.run {
-            viewPagerMain.setEdgeEffectColor(primaryColor)
-            viewPagerMain.offscreenPageLimit = 3
-            viewPagerMain.adapter = adapter
-            viewPagerMain.addOnPageChangeListener(PageChangeCallback())
-            bottomNavigationView.elevation = elevation
-            bottomNavigationView.setOnNavigationItemSelectedListener(this@MainActivity)
-            bottomNavigationView.setOnNavigationItemReselectedListener(this@MainActivity)
-        }
+        initView()
+        upHomePage()
+        viewModel.deleteNotShelfBook()
         onBackPressedDispatcher.addCallback(this) {
             if (pagePosition != 0) {
                 binding.viewPagerMain.currentItem = 0
@@ -116,7 +119,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.action == MotionEvent.ACTION_DOWN) {
             currentFocus?.let {
-                if (it is EditText) {
+                if (it.shouldHideSoftInput(ev)) {
                     it.clearFocus()
                     it.hideSoftInput()
                 }
@@ -134,6 +137,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             upVersion()
             //设置本地密码
             setLocalPassword()
+            notifyAppCrash()
             //备份同步
             backupSync()
             //自动更新书籍
@@ -186,6 +190,24 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
     }
 
+    private fun initView() = binding.run {
+        viewPagerMain.setEdgeEffectColor(primaryColor)
+        viewPagerMain.offscreenPageLimit = 3
+        viewPagerMain.adapter = adapter
+        viewPagerMain.addOnPageChangeListener(PageChangeCallback())
+        bottomNavigationView.elevation = elevation
+        bottomNavigationView.setOnNavigationItemSelectedListener(this@MainActivity)
+        bottomNavigationView.setOnNavigationItemReselectedListener(this@MainActivity)
+        if (AppConfig.isEInkMode) {
+            bottomNavigationView.setBackgroundResource(R.drawable.bg_eink_border_top)
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, windowInsets ->
+            val height = windowInsets.navigationBarHeight
+            bottomNavigationView.bottomPadding = height
+            windowInsets.inset(0, 0, 0, height)
+        }
+    }
+
     /**
      * 用户隐私与协议
      */
@@ -221,7 +243,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
         LocalConfig.versionCode = appInfo.versionCode
         if (LocalConfig.isFirstOpenApp) {
-            val help = String(assets.open("help/appHelp.md").readBytes())
+            val help = String(assets.open("web/help/md/appHelp.md").readBytes())
             val dialog = TextDialog(getString(R.string.help), help, TextDialog.Mode.MD)
             dialog.setOnDismissListener {
                 block.resume(null)
@@ -263,6 +285,19 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             cancelButton {
                 LocalConfig.password = ""
             }
+        }
+    }
+
+    private fun notifyAppCrash() {
+        if (!LocalConfig.appCrash || BuildConfig.DEBUG) {
+            return
+        }
+        LocalConfig.appCrash = false
+        alert(getString(R.string.draw), "检测到阅读发生了崩溃，是否打开崩溃日志以便报告问题？") {
+            yesButton {
+                showDialogFragment<CrashLogsDialog>()
+            }
+            noButton()
         }
     }
 
@@ -354,6 +389,21 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         adapter.notifyDataSetChanged()
     }
 
+    private fun upHomePage() {
+        when (AppConfig.defaultHomePage) {
+            "bookshelf" -> {}
+            "explore" -> if (AppConfig.showDiscovery) {
+                binding.viewPagerMain.setCurrentItem(realPositions.indexOf(idExplore), false)
+            }
+
+            "rss" -> if (AppConfig.showRSS) {
+                binding.viewPagerMain.setCurrentItem(realPositions.indexOf(idRss), false)
+            }
+
+            "my" -> binding.viewPagerMain.setCurrentItem(realPositions.indexOf(idMy), false)
+        }
+    }
+
     private fun getFragmentId(position: Int): Int {
         val id = realPositions[position]
         if (id == idBookshelf) {
@@ -365,14 +415,9 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     private inner class PageChangeCallback : ViewPager.SimpleOnPageChangeListener() {
 
         override fun onPageSelected(position: Int) {
-            val oldPosition = pagePosition
             pagePosition = position
             binding.bottomNavigationView.menu
                 .getItem(realPositions[position]).isChecked = true
-            val callback1 = fragmentMap[getFragmentId(position)] as? Callback
-            val callback2 = fragmentMap[getFragmentId(oldPosition)] as? Callback
-            callback1?.onActive()
-            callback2?.onInactive()
         }
 
     }
@@ -415,18 +460,14 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
 
         override fun instantiateItem(container: ViewGroup, position: Int): Any {
-            val fragment = super.instantiateItem(container, position) as Fragment
+            var fragment = super.instantiateItem(container, position) as Fragment
+            if (fragment.isCreated && getItemPosition(fragment) == POSITION_NONE) {
+                destroyItem(container, position, fragment)
+                fragment = super.instantiateItem(container, position) as Fragment
+            }
             fragmentMap[getId(position)] = fragment
             return fragment
         }
-
-    }
-
-    interface Callback {
-
-        fun onActive()
-
-        fun onInactive()
 
     }
 

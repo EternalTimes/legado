@@ -11,18 +11,21 @@ import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentStatePagerAdapter
 import com.google.android.material.tabs.TabLayout
 import io.legado.app.R
-import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.databinding.FragmentBookshelf1Binding
+import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.book.group.GroupEditDialog
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.main.bookshelf.BaseBookshelfFragment
 import io.legado.app.ui.main.bookshelf.style1.books.BooksFragment
-import io.legado.app.utils.*
+import io.legado.app.utils.isCreated
+import io.legado.app.utils.setEdgeEffectColor
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlin.collections.set
 
@@ -109,7 +112,7 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
     private fun selectLastTab() {
         tabLayout.post {
             tabLayout.removeOnTabSelectedListener(this)
-            tabLayout.getTabAt(getPrefInt(PreferKey.saveTabPosition, 0))?.select()
+            tabLayout.getTabAt(AppConfig.saveTabPosition)?.select()
             tabLayout.addOnTabSelectedListener(this)
         }
     }
@@ -125,7 +128,7 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
     override fun onTabUnselected(tab: TabLayout.Tab) = Unit
 
     override fun onTabSelected(tab: TabLayout.Tab) {
-        putPrefInt(PreferKey.saveTabPosition, tab.position)
+        AppConfig.saveTabPosition = tab.position
     }
 
     override fun gotoTop() {
@@ -168,8 +171,15 @@ class BookshelfFragment1() : BaseBookshelfFragment(R.layout.fragment_bookshelf1)
         }
 
         override fun instantiateItem(container: ViewGroup, position: Int): Any {
-            val fragment = super.instantiateItem(container, position) as BooksFragment
+            var fragment = super.instantiateItem(container, position) as BooksFragment
             val group = bookGroups[position]
+            /**
+             * Activity recreate 会复用之前的 Fragment，不正确的需要重新创建
+             */
+            if (fragment.isCreated && getItemPosition(fragment) == POSITION_NONE) {
+                destroyItem(container, position, fragment)
+                fragment = super.instantiateItem(container, position) as BooksFragment
+            }
             fragmentMap[group.groupId] = fragment
             return fragment
         }

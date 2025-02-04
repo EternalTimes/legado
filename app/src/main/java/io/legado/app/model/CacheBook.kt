@@ -15,11 +15,13 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.service.CacheBookService
 import io.legado.app.utils.postEvent
-
 import io.legado.app.utils.startService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.delay
-
+import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
 
@@ -31,6 +33,7 @@ object CacheBook {
     fun getOrCreate(bookUrl: String): CacheBookModel? {
         val book = appDb.bookDao.getBook(bookUrl) ?: return null
         val bookSource = appDb.bookSourceDao.getBookSource(book.origin) ?: return null
+        updateBookSource(bookSource)
         var cacheBook = cacheBookMap[bookUrl]
         if (cacheBook != null) {
             //存在时更新,书源可能会变化,必须更新
@@ -45,6 +48,7 @@ object CacheBook {
 
     @Synchronized
     fun getOrCreate(bookSource: BookSource, book: Book): CacheBookModel {
+        updateBookSource(bookSource)
         var cacheBook = cacheBookMap[book.bookUrl]
         if (cacheBook != null) {
             //存在时更新,书源可能会变化,必须更新
@@ -55,6 +59,15 @@ object CacheBook {
         cacheBook = CacheBookModel(bookSource, book)
         cacheBookMap[book.bookUrl] = cacheBook
         return cacheBook
+    }
+
+    private fun updateBookSource(newBookSource: BookSource) {
+        cacheBookMap.forEach {
+            val model = it.value
+            if (model.bookSource.bookSourceUrl == newBookSource.bookSourceUrl) {
+                model.bookSource = newBookSource
+            }
+        }
     }
 
     fun start(context: Context, book: Book, start: Int, end: Int) {
@@ -79,6 +92,17 @@ object CacheBook {
         context.startService<CacheBookService> {
             action = IntentAction.stop
         }
+    }
+
+    fun clear() {
+        successDownloadSet.clear()
+        errorDownloadMap.clear()
+    }
+
+    fun close() {
+        cacheBookMap.forEach { it.value.stop() }
+        cacheBookMap.clear()
+        clear()
     }
 
     val downloadSummary: String
@@ -155,6 +179,7 @@ object CacheBook {
                     waitDownloadSet.add(i)
                 }
             }
+            cacheBookMap[book.bookUrl] = this
             postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
         }
 
@@ -243,9 +268,9 @@ object CacheBook {
             waitDownloadSet.remove(chapterIndex)
             onDownloadSet.add(chapterIndex)
             if (BookHelp.hasContent(book, chapter)) {
-                Coroutine.async {
+                Coroutine.async(scope, context, executeContext = context) {
                     BookHelp.getContent(book, chapter)?.let {
-                        BookHelp.saveImages(bookSource, book, chapter, it)
+                        BookHelp.saveImages(bookSource, book, chapter, it, 1)
                     }
                 }.onSuccess {
                     onSuccess(chapter)
@@ -266,7 +291,9 @@ object CacheBook {
                 bookSource,
                 book,
                 chapter,
-                context = context
+                context = context,
+                start = CoroutineStart.LAZY,
+                executeContext = context
             ).onSuccess { content ->
                 onSuccess(chapter)
                 downloadFinish(chapter, content)
@@ -280,6 +307,31 @@ object CacheBook {
                 onCancel(chapterIndex)
             }.onFinally {
                 onFinally()
+            }.start()
+        }
+
+        suspend fun downloadAwait(chapter: BookChapter): String {
+            postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
+            synchronized(this) {
+                onDownloadSet.add(chapter.index)
+                waitDownloadSet.remove(chapter.index)
+            }
+            try {
+                val content = WebBook.getContentAwait(bookSource, book, chapter)
+                onSuccess(chapter)
+                ReadBook.downloadedChapters.add(chapter.index)
+                ReadBook.downloadFailChapters.remove(chapter.index)
+                return content
+            } catch (e: Exception) {
+                if (e is CancellationException) {
+                    onCancel(chapter.index)
+                }
+                onError(chapter, e)
+                ReadBook.downloadFailChapters[chapter.index] =
+                    (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
+                return "获取正文失败\n${e.localizedMessage}"
+            } finally {
+                postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
             }
         }
 
@@ -287,6 +339,7 @@ object CacheBook {
         fun download(
             scope: CoroutineScope,
             chapter: BookChapter,
+            semaphore: Semaphore?,
             resetPageOffset: Boolean = false
         ) {
             if (onDownloadSet.contains(chapter.index)) {
@@ -295,29 +348,43 @@ object CacheBook {
             postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
             onDownloadSet.add(chapter.index)
             waitDownloadSet.remove(chapter.index)
-            WebBook.getContent(scope, bookSource, book, chapter)
-                .onSuccess { content ->
-                    onSuccess(chapter)
-                    downloadFinish(chapter, content, resetPageOffset)
-                }.onError {
-                    onError(chapter, it)
-                    downloadFinish(chapter, "获取正文失败\n${it.localizedMessage}", resetPageOffset)
-                }.onCancel {
-                    onCancel(chapter.index)
-                }.onFinally {
-                    postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
-                }
+            WebBook.getContent(
+                scope,
+                bookSource,
+                book,
+                chapter,
+                start = CoroutineStart.LAZY,
+                executeContext = IO,
+                semaphore = semaphore
+            ).onSuccess { content ->
+                onSuccess(chapter)
+                ReadBook.downloadedChapters.add(chapter.index)
+                ReadBook.downloadFailChapters.remove(chapter.index)
+                downloadFinish(chapter, content, resetPageOffset)
+            }.onError {
+                onError(chapter, it)
+                ReadBook.downloadFailChapters[chapter.index] =
+                    (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
+                downloadFinish(chapter, "获取正文失败\n${it.localizedMessage}", resetPageOffset)
+            }.onCancel {
+                onCancel(chapter.index)
+                downloadFinish(chapter, "download canceled", resetPageOffset, true)
+            }.onFinally {
+                postEvent(EventBus.UP_DOWNLOAD, book.bookUrl)
+            }.start()
         }
 
         private fun downloadFinish(
             chapter: BookChapter,
             content: String,
-            resetPageOffset: Boolean = false
+            resetPageOffset: Boolean = false,
+            canceled: Boolean = false
         ) {
             if (ReadBook.book?.bookUrl == book.bookUrl) {
                 ReadBook.contentLoadFinish(
                     book, chapter, content,
-                    resetPageOffset = resetPageOffset
+                    resetPageOffset = resetPageOffset,
+                    canceled = canceled
                 )
             }
         }

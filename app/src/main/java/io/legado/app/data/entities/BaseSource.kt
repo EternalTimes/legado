@@ -1,17 +1,23 @@
 package io.legado.app.data.entities
 
 import cn.hutool.crypto.symmetric.AES
-import com.script.SimpleBindings
+import com.script.ScriptBindings
+import com.script.buildScriptBindings
 import com.script.rhino.RhinoScriptEngine
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.help.CacheManager
 import io.legado.app.help.JsExtensions
+import io.legado.app.help.SymmetricCryptoAndroid
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.CookieStore
 import io.legado.app.model.SharedJsScope
-import io.legado.app.utils.*
+import io.legado.app.utils.GSON
+import io.legado.app.utils.fromJsonArray
+import io.legado.app.utils.fromJsonObject
+import io.legado.app.utils.has
+import io.legado.app.utils.printOnDebug
 import org.intellij.lang.annotations.Language
 import org.mozilla.javascript.Scriptable
 
@@ -97,18 +103,15 @@ interface BaseSource : JsExtensions {
      */
     fun getHeaderMap(hasLoginHeader: Boolean = false) = HashMap<String, String>().apply {
         header?.let {
-            GSON.fromJsonObject<Map<String, String>>(
-                when {
-                    it.startsWith("@js:", true) -> evalJS(it.substring(4)).toString()
-                    it.startsWith("<js>", true) -> evalJS(
-                        it.substring(
-                            4,
-                            it.lastIndexOf("<")
-                        )
-                    ).toString()
-                    else -> it
-                }
-            ).getOrNull()?.let { map ->
+            val json = when {
+                it.startsWith("@js:", true) -> evalJS(it.substring(4)).toString()
+                it.startsWith("<js>", true) -> evalJS(
+                    it.substring(4, it.lastIndexOf("<"))
+                ).toString()
+
+                else -> it
+            }
+            GSON.fromJsonObject<Map<String, String>>(json).getOrNull()?.let { map ->
                 putAll(map)
             }
         }
@@ -176,7 +179,7 @@ interface BaseSource : JsExtensions {
     fun putLoginInfo(info: String): Boolean {
         return try {
             val key = (AppConst.androidId).encodeToByteArray(0, 16)
-            val encodeStr = AES(key).encryptBase64(info)
+            val encodeStr = SymmetricCryptoAndroid("AES", key).encryptBase64(info)
             CacheManager.put("userInfo_${getKey()}", encodeStr)
             true
         } catch (e: Exception) {
@@ -227,16 +230,16 @@ interface BaseSource : JsExtensions {
      * 执行JS
      */
     @Throws(Exception::class)
-    fun evalJS(jsStr: String, bindingsConfig: SimpleBindings.() -> Unit = {}): Any? {
-        val bindings = SimpleBindings()
-        bindings.apply(bindingsConfig)
-        bindings["java"] = this
-        bindings["source"] = this
-        bindings["baseUrl"] = getKey()
-        bindings["cookie"] = CookieStore
-        bindings["cache"] = CacheManager
-        val context = RhinoScriptEngine.getScriptContext(bindings)
-        val scope = RhinoScriptEngine.getRuntimeScope(context)
+    fun evalJS(jsStr: String, bindingsConfig: ScriptBindings.() -> Unit = {}): Any? {
+        val bindings = buildScriptBindings { bindings ->
+            bindings.apply(bindingsConfig)
+            bindings["java"] = this
+            bindings["source"] = this
+            bindings["baseUrl"] = getKey()
+            bindings["cookie"] = CookieStore
+            bindings["cache"] = CacheManager
+        }
+        val scope = RhinoScriptEngine.getRuntimeScope(bindings)
         getShareScope()?.let {
             scope.prototype = it
         }

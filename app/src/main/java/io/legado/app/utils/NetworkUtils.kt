@@ -4,17 +4,16 @@ import android.annotation.SuppressLint
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import cn.hutool.core.lang.Validator
 import io.legado.app.constant.AppLog
 import okhttp3.internal.publicsuffix.PublicSuffixDatabase
 import splitties.systemservices.connectivityManager
-
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketException
 import java.net.URL
-import java.util.*
-
-import cn.hutool.core.lang.Validator
+import java.util.BitSet
+import java.util.Enumeration
 
 @Suppress("unused", "MemberVisibilityCanBePrivate")
 object NetworkUtils {
@@ -67,7 +66,7 @@ object NetworkUtils {
         for (i in '0'.code..'9'.code) {
             bitSet.set(i)
         }
-        for (char in "+-_.$:()!*@&#,[]") {
+        for (char in "+-_.~$:()!*@&#,[]") {
             bitSet.set(char.code)
         }
         return@lazy bitSet
@@ -179,32 +178,51 @@ object NetworkUtils {
         }.getOrDefault(baseUrl)
     }
 
+    fun getSubDomainOrNull(url: String): String? {
+        val baseUrl = getBaseUrl(url) ?: return null
+        return kotlin.runCatching {
+            val mURL = URL(baseUrl)
+            val host: String = mURL.host
+            //mURL.scheme https/http
+            //判断是否为ip
+            if (isIPAddress(host)) return host
+            //PublicSuffixDatabase处理域名
+            PublicSuffixDatabase.get().getEffectiveTldPlusOne(host) ?: host
+        }.getOrDefault(null)
+    }
+
+    fun getDomain(url: String): String {
+        val baseUrl = getBaseUrl(url) ?: return url
+        return kotlin.runCatching {
+            URL(baseUrl).host
+        }.getOrDefault(baseUrl)
+    }
+
     /**
      * Get local Ip address.
      */
-    fun getLocalIPAddress(): InetAddress? {
-        var enumeration: Enumeration<NetworkInterface>? = null
+    fun getLocalIPAddress(): List<InetAddress> {
+        val enumeration: Enumeration<NetworkInterface>
         try {
             enumeration = NetworkInterface.getNetworkInterfaces()
         } catch (e: SocketException) {
             e.printOnDebug()
+            return emptyList()
         }
 
-        if (enumeration != null) {
-            while (enumeration.hasMoreElements()) {
-                val nif = enumeration.nextElement()
-                val addresses = nif.inetAddresses
-                if (addresses != null) {
-                    while (addresses.hasMoreElements()) {
-                        val address = addresses.nextElement()
-                        if (!address.isLoopbackAddress && isIPv4Address(address.hostAddress)) {
-                            return address
-                        }
-                    }
+        val addressList = mutableListOf<InetAddress>()
+
+        while (enumeration.hasMoreElements()) {
+            val nif = enumeration.nextElement()
+            val addresses = nif.inetAddresses ?: continue
+            while (addresses.hasMoreElements()) {
+                val address = addresses.nextElement()
+                if (!address.isLoopbackAddress && isIPv4Address(address.hostAddress)) {
+                    addressList.add(address)
                 }
             }
         }
-        return null
+        return addressList
     }
 
     /**
@@ -214,14 +232,17 @@ object NetworkUtils {
      * @return True if the input parameter is a valid IPv4 address.
      */
     fun isIPv4Address(input: String?): Boolean {
-        return input != null && Validator.isIpv4(input)
+        return input != null && input.isNotEmpty()
+                && input[0] in '1'..'9'
+                && input.count { it == '.' } == 3
+                && Validator.isIpv4(input)
     }
 
     /**
      * Check if valid IPV6 address.
      */
     fun isIPv6Address(input: String?): Boolean {
-        return input != null && Validator.isIpv6(input)
+        return input != null && input.contains(":") && Validator.isIpv6(input)
     }
 
     /**
