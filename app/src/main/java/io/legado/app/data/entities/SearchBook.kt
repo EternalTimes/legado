@@ -2,7 +2,12 @@ package io.legado.app.data.entities
 
 import android.content.Context
 import android.os.Parcelable
-import androidx.room.*
+import androidx.room.ColumnInfo
+import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Ignore
+import androidx.room.Index
+import androidx.room.PrimaryKey
 import io.legado.app.R
 import io.legado.app.constant.BookType
 import io.legado.app.utils.GSON
@@ -25,9 +30,11 @@ import kotlinx.parcelize.Parcelize
 data class SearchBook(
     @PrimaryKey
     override var bookUrl: String = "",
-    var origin: String = "",                     // 书源规则
+    /** 书源 */
+    var origin: String = "",
     var originName: String = "",
-    var type: Int = BookType.text,                          // @BookType
+    /** BookType */
+    var type: Int = BookType.text,
     override var name: String = "",
     override var author: String = "",
     override var kind: String? = null,
@@ -35,10 +42,16 @@ data class SearchBook(
     var intro: String? = null,
     override var wordCount: String? = null,
     var latestChapterTitle: String? = null,
-    var tocUrl: String = "",                    // 目录页Url (toc=table of Contents)
+    /** 目录页Url (toc=table of Contents) */
+    var tocUrl: String = "",
     var time: Long = System.currentTimeMillis(),
     override var variable: String? = null,
-    var originOrder: Int = 0
+    var originOrder: Int = 0,
+    var chapterWordCountText: String? = null,
+    @ColumnInfo(defaultValue = "-1")
+    var chapterWordCount: Int = -1,
+    @ColumnInfo(defaultValue = "-1")
+    var respondTime: Int = -1
 ) : Parcelable, BaseBook, Comparable<SearchBook> {
 
     @Ignore
@@ -91,6 +104,11 @@ data class SearchBook(
         }
     }
 
+    fun releaseHtmlData() {
+        infoHtml = null
+        tocHtml = null
+    }
+
     fun toBook() = Book(
         name = name,
         author = author,
@@ -108,6 +126,6 @@ data class SearchBook(
         variable = variable
     ).apply {
         this.infoHtml = this@SearchBook.infoHtml
-        this.tocUrl = this@SearchBook.tocUrl
+        this.tocHtml = this@SearchBook.tocHtml
     }
 }
