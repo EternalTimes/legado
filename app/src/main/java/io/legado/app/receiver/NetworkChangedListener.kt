@@ -13,6 +13,7 @@ import splitties.systemservices.connectivityManager
 /**
  * 监测网络变化
  */
+@SuppressLint("ObsoleteSdkInt")
 class NetworkChangedListener(private val context: Context) {
 
     var onNetworkChanged: (() -> Unit)? = null
@@ -35,7 +36,7 @@ class NetworkChangedListener(private val context: Context) {
         return@lazy null
     }
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
     fun register() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             networkCallback?.let {

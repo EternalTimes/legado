@@ -1,15 +1,23 @@
 package io.legado.app.ui.book.read.page.entities
 
+import androidx.annotation.Keep
+
 /**
  * 位置信息
  */
+@Keep
+@Suppress("unused")
 data class TextPos(
     var relativePagePos: Int,
     var lineIndex: Int,
-    var columnIndex: Int
+    var columnIndex: Int,
 ) {
 
-    fun upData(relativePos: Int, lineIndex: Int, charIndex: Int) {
+    fun upData(
+        relativePos: Int,
+        lineIndex: Int,
+        charIndex: Int,
+    ) {
         this.relativePagePos = relativePos
         this.lineIndex = lineIndex
         this.columnIndex = charIndex
@@ -44,4 +52,15 @@ data class TextPos(
             else -> 0
         }
     }
+
+    fun reset() {
+        relativePagePos = 0
+        lineIndex = -1
+        columnIndex = -1
+    }
+
+    fun isSelected(): Boolean {
+        return lineIndex >= 0 && columnIndex >= 0
+    }
+
 }

@@ -1,11 +1,18 @@
 package io.legado.app.data.dao
 
-import androidx.room.*
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
 import io.legado.app.constant.AppPattern
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.utils.cnCompare
 import io.legado.app.utils.splitNotBlank
+import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 
 
@@ -23,6 +30,9 @@ interface ReplaceRuleDao {
 
     @Query("select `group` from replace_rules where `group` is not null and `group` <> ''")
     fun flowGroupsUnProcessed(): Flow<List<String>>
+
+    @Query("select * from replace_rules where `group` is null or trim(`group`) = '' or trim(`group`) like '%未分组%'")
+    fun flowNoGroup(): Flow<List<ReplaceRule>>
 
     @get:Query("SELECT MIN(sortOrder) FROM replace_rules")
     val minOrder: Int
@@ -48,6 +58,7 @@ interface ReplaceRuleDao {
     @Query(
         """SELECT * FROM replace_rules WHERE isEnabled = 1 and scopeContent = 1
         AND (scope LIKE '%' || :name || '%' or scope LIKE '%' || :origin || '%' or scope is null or scope = '')
+        and (excludeScope is null or (excludeScope not LIKE '%' || :name || '%' and excludeScope not LIKE '%' || :origin || '%'))
         order by sortOrder"""
     )
     fun findEnabledByContentScope(name: String, origin: String): List<ReplaceRule>
@@ -55,6 +66,7 @@ interface ReplaceRuleDao {
     @Query(
         """SELECT * FROM replace_rules WHERE isEnabled = 1 and scopeTitle = 1
         AND (scope LIKE '%' || :name || '%' or scope LIKE '%' || :origin || '%' or scope is null or scope = '')
+        and (excludeScope is null or (excludeScope not LIKE '%' || :name || '%' and excludeScope not LIKE '%' || :origin || '%'))
         order by sortOrder"""
     )
     fun findEnabledByTitleScope(name: String, origin: String): List<ReplaceRule>
@@ -92,14 +104,11 @@ interface ReplaceRuleDao {
         }
     }
 
-    val allGroups: List<String>
-        get() {
-            return dealGroups(allGroupsUnProcessed)
-        }
+    fun allGroups(): List<String> = dealGroups(allGroupsUnProcessed)
 
     fun flowGroups(): Flow<List<String>> {
         return flowGroupsUnProcessed().map { list ->
             dealGroups(list)
-        }
+        }.flowOn(IO)
     }
 }

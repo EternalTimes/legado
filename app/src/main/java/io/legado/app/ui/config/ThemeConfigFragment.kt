@@ -29,7 +29,24 @@ import io.legado.app.lib.prefs.fragment.PreferenceFragment
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.ui.widget.seekbar.SeekBarChangeListener
-import io.legado.app.utils.*
+import io.legado.app.utils.ColorUtils
+import io.legado.app.utils.FileUtils
+import io.legado.app.utils.MD5Utils
+import io.legado.app.utils.SelectImageContract
+import io.legado.app.utils.applyTint
+import io.legado.app.utils.externalFiles
+import io.legado.app.utils.getPrefInt
+import io.legado.app.utils.getPrefString
+import io.legado.app.utils.inputStream
+import io.legado.app.utils.postEvent
+import io.legado.app.utils.putPrefInt
+import io.legado.app.utils.putPrefString
+import io.legado.app.utils.readUri
+import io.legado.app.utils.removePref
+import io.legado.app.utils.setEdgeEffectColor
+import io.legado.app.utils.startActivity
+import io.legado.app.utils.toastOnUi
+import splitties.init.appCtx
 import java.io.FileOutputStream
 
 
@@ -46,6 +63,7 @@ class ThemeConfigFragment : PreferenceFragment(),
                 requestCodeBgLight -> setBgFromUri(uri, PreferKey.bgImage) {
                     upTheme(false)
                 }
+
                 requestCodeBgDark -> setBgFromUri(uri, PreferKey.bgImageN) {
                     upTheme(true)
                 }
@@ -57,9 +75,6 @@ class ThemeConfigFragment : PreferenceFragment(),
         addPreferencesFromResource(R.xml.pref_config_theme)
         if (Build.VERSION.SDK_INT < 26) {
             preferenceScreen.removePreferenceRecursively(PreferKey.launcherIcon)
-        }
-        if (!AppConfig.isGooglePlay) {
-            preferenceScreen.removePreferenceRecursively("welcomeStyle")
         }
         upPreferenceSummary(PreferKey.bgImage, getPrefString(PreferKey.bgImage))
         upPreferenceSummary(PreferKey.bgImageN, getPrefString(PreferKey.bgImageN))
@@ -132,12 +147,14 @@ class ThemeConfigFragment : PreferenceFragment(),
             PreferKey.cBBackground -> {
                 upTheme(false)
             }
+
             PreferKey.cNPrimary,
             PreferKey.cNAccent,
             PreferKey.cNBackground,
             PreferKey.cNBBackground -> {
                 upTheme(true)
             }
+
             PreferKey.bgImage,
             PreferKey.bgImageN -> {
                 upPreferenceSummary(key, getPrefString(key))
@@ -162,6 +179,7 @@ class ThemeConfigFragment : PreferenceFragment(),
                     AppConfig.elevation = it
                     recreateActivities()
                 }
+
             PreferKey.fontScale -> NumberPickerDialog(requireContext())
                 .setTitle(getString(R.string.font_scale))
                 .setMaxValue(16)
@@ -175,15 +193,20 @@ class ThemeConfigFragment : PreferenceFragment(),
                     putPrefInt(PreferKey.fontScale, it)
                     recreateActivities()
                 }
+
             PreferKey.bgImage -> selectBgAction(false)
             PreferKey.bgImageN -> selectBgAction(true)
             "themeList" -> ThemeListDialog().show(childFragmentManager, "themeList")
             "saveDayTheme",
             "saveNightTheme" -> alertSaveTheme(key)
-            "coverConfig" -> (activity as? ConfigActivity)
-                ?.replaceFragment<CoverConfigFragment>(ConfigTag.COVER_CONFIG)
-            "welcomeStyle" -> (activity as? ConfigActivity)
-                ?.replaceFragment<WelcomeConfigFragment>(ConfigTag.WELCOME_CONFIG)
+
+            "coverConfig" -> startActivity<ConfigActivity> {
+                putExtra("configTag", ConfigTag.COVER_CONFIG)
+            }
+
+            "welcomeStyle" -> startActivity<ConfigActivity> {
+                putExtra("configTag", ConfigTag.WELCOME_CONFIG)
+            }
         }
         return super.onPreferenceTreeClick(preference)
     }
@@ -201,6 +224,7 @@ class ThemeConfigFragment : PreferenceFragment(),
                         "saveDayTheme" -> {
                             ThemeConfig.saveDayTheme(requireContext(), themeName)
                         }
+
                         "saveNightTheme" -> {
                             ThemeConfig.saveNightTheme(requireContext(), themeName)
                         }
@@ -226,6 +250,7 @@ class ThemeConfigFragment : PreferenceFragment(),
                 0 -> alertImageBlurring(blurringKey) {
                     upTheme(isNight)
                 }
+
                 1 -> {
                     if (isNight) {
                         selectImage.launch(requestCodeBgDark)
@@ -233,6 +258,7 @@ class ThemeConfigFragment : PreferenceFragment(),
                         selectImage.launch(requestCodeBgLight)
                     }
                 }
+
                 2 -> {
                     removePref(bgKey)
                     upTheme(isNight)
@@ -287,33 +313,40 @@ class ThemeConfigFragment : PreferenceFragment(),
         when (preferenceKey) {
             PreferKey.barElevation -> preference.summary =
                 getString(R.string.bar_elevation_s, value)
+
             PreferKey.fontScale -> {
                 val fontScale = AppContextWrapper.getFontScale(requireContext())
                 preference.summary = getString(R.string.font_scale_summary, fontScale)
             }
+
             PreferKey.bgImage,
             PreferKey.bgImageN -> preference.summary = if (value.isNullOrBlank()) {
                 getString(R.string.select_image)
             } else {
                 value
             }
+
             else -> preference.summary = value
         }
     }
 
     private fun setBgFromUri(uri: Uri, preferenceKey: String, success: () -> Unit) {
         readUri(uri) { fileDoc, inputStream ->
-            var file = requireContext().externalFiles
-            val suffix = fileDoc.name.substringAfterLast(".")
-            val fileName = uri.inputStream(requireContext())!!.use {
-                MD5Utils.md5Encode(it) + ".$suffix"
+            kotlin.runCatching {
+                var file = requireContext().externalFiles
+                val suffix = fileDoc.name.substringAfterLast(".")
+                val fileName = uri.inputStream(requireContext()).getOrThrow().use {
+                    MD5Utils.md5Encode(it) + ".$suffix"
+                }
+                file = FileUtils.createFileIfNotExist(file, preferenceKey, fileName)
+                FileOutputStream(file).use {
+                    inputStream.copyTo(it)
+                }
+                putPrefString(preferenceKey, file.absolutePath)
+                success()
+            }.onFailure {
+                appCtx.toastOnUi(it.localizedMessage)
             }
-            file = FileUtils.createFileIfNotExist(file, preferenceKey, fileName)
-            FileOutputStream(file).use {
-                inputStream.copyTo(it)
-            }
-            putPrefString(preferenceKey, file.absolutePath)
-            success()
         }
     }
 

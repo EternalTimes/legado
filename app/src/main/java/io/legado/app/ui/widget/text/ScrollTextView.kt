@@ -57,7 +57,7 @@ class ScrollTextView(context: Context, attrs: AttributeSet?) :
             }
 
             override fun onScroll(
-                e1: MotionEvent,
+                e1: MotionEvent?,
                 e2: MotionEvent,
                 distanceX: Float,
                 distanceY: Float
@@ -258,6 +258,7 @@ class ScrollTextView(context: Context, attrs: AttributeSet?) :
             }
         }
 
+        @Suppress("DEPRECATION")
         fun postOnAnimation() {
             if (mEatRunOnAnimationRequest) {
                 mReSchedulePostAnimationCallback = true

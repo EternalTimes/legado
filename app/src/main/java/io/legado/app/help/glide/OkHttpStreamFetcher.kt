@@ -8,21 +8,22 @@ import com.bumptech.glide.load.data.DataFetcher
 import com.bumptech.glide.load.model.GlideUrl
 import com.bumptech.glide.util.ContentLengthInputStream
 import com.bumptech.glide.util.Preconditions
-import io.legado.app.data.appDb
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.http.CookieManager.cookieJarHeader
 import io.legado.app.help.http.addHeaders
 import io.legado.app.help.http.okHttpClient
-import io.legado.app.utils.isWifiConnect
+import io.legado.app.help.source.SourceHelp
 import io.legado.app.utils.ImageUtils
+import io.legado.app.utils.isWifiConnect
 import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
 import splitties.init.appCtx
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
-import java.io.ByteArrayInputStream
 
 
 class OkHttpStreamFetcher(private val url: GlideUrl, private val options: Options) :
@@ -35,7 +36,15 @@ class OkHttpStreamFetcher(private val url: GlideUrl, private val options: Option
     @Volatile
     private var call: Call? = null
 
+    companion object {
+        val failUrl = hashSetOf<String>()
+    }
+
     override fun loadData(priority: Priority, callback: DataFetcher.DataCallback<in InputStream>) {
+        if (failUrl.contains(url.toStringUrl())) {
+            callback.onLoadFailed(NoStackTraceException("跳过加载失败的图片"))
+            return
+        }
         val loadOnlyWifi = options.get(OkHttpModelLoader.loadOnlyWifiOption) ?: false
         if (loadOnlyWifi && !appCtx.isWifiConnect) {
             callback.onLoadFailed(NoStackTraceException("只在wifi加载图片"))
@@ -44,10 +53,12 @@ class OkHttpStreamFetcher(private val url: GlideUrl, private val options: Option
         val requestBuilder: Request.Builder = Request.Builder().url(url.toStringUrl())
         val headerMap = HashMap<String, String>()
         options.get(OkHttpModelLoader.sourceOriginOption)?.let { sourceUrl ->
-            source = appDb.bookSourceDao.getBookSource(sourceUrl)
-                ?: appDb.rssSourceDao.getByKey(sourceUrl)
+            source = SourceHelp.getSource(sourceUrl)
             source?.getHeaderMap(true)?.let {
                 headerMap.putAll(it)
+            }
+            if (source?.enabledCookieJar == true) {
+                headerMap[cookieJarHeader] = "1"
             }
         }
         headerMap.putAll(url.headers)
@@ -97,6 +108,7 @@ class OkHttpStreamFetcher(private val url: GlideUrl, private val options: Option
                 callback?.onDataReady(stream)
             }
         } else {
+            failUrl.add(url.toStringUrl())
             callback?.onLoadFailed(HttpException(response.message, response.code))
         }
     }
