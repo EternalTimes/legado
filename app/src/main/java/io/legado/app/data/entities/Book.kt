@@ -1,12 +1,22 @@
 package io.legado.app.data.entities
 
 import android.os.Parcelable
-import androidx.room.*
+import androidx.room.ColumnInfo
+import androidx.room.Entity
+import androidx.room.Ignore
+import androidx.room.Index
+import androidx.room.PrimaryKey
+import androidx.room.TypeConverter
+import androidx.room.TypeConverters
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PageAnim
 import io.legado.app.data.appDb
-import io.legado.app.help.book.*
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.ContentProcessor
+import io.legado.app.help.book.isEpub
+import io.legado.app.help.book.isImage
+import io.legado.app.help.book.simulatedTotalChapterNum
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.model.ReadBook
@@ -16,6 +26,7 @@ import io.legado.app.utils.fromJsonObject
 import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
 import java.nio.charset.Charset
+import java.time.LocalDate
 import kotlin.math.max
 import kotlin.math.min
 
@@ -90,6 +101,7 @@ data class Book(
     // 最近一次阅读书籍的时间(打开正文的时间)
     @ColumnInfo(defaultValue = "0")
     var durChapterTime: Long = System.currentTimeMillis(),
+    //字数
     override var wordCount: String? = null,
     // 刷新书架时更新书籍信息
     @ColumnInfo(defaultValue = "1")
@@ -102,7 +114,11 @@ data class Book(
     var originOrder: Int = 0,
     // 自定义书籍变量信息(用于书源规则检索书籍信息)
     override var variable: String? = null,
-    var readConfig: ReadConfig? = null
+    //阅读设置
+    var readConfig: ReadConfig? = null,
+    //同步时间
+    @ColumnInfo(defaultValue = "0")
+    var syncTime: Long = 0L
 ) : Parcelable, BaseBook {
 
     override fun equals(other: Any?): Boolean {
@@ -135,9 +151,17 @@ data class Book(
     @IgnoredOnParcel
     var downloadUrls: List<String>? = null
 
+    @Ignore
+    @IgnoredOnParcel
+    private var folderName: String? = null
+
+    @get:Ignore
+    @IgnoredOnParcel
+    val lastChapterIndex get() = totalChapterNum - 1
+
     fun getRealAuthor() = author.replace(AppPattern.authorRegex, "")
 
-    fun getUnreadChapterNum() = max(totalChapterNum - durChapterIndex - 1, 0)
+    fun getUnreadChapterNum() = max(simulatedTotalChapterNum() - durChapterIndex - 1, 0)
 
     fun getDisplayCover() = if (customCoverUrl.isNullOrEmpty()) coverUrl else customCoverUrl
 
@@ -213,7 +237,6 @@ data class Book(
 
     fun getImageStyle(): String? {
         return config.imageStyle
-            ?: if (isImage || isPdf) imgStyleFull else null
     }
 
     fun setTtsEngine(ttsEngine: String?) {
@@ -232,15 +255,71 @@ data class Book(
         return config.splitLongChapter
     }
 
+    // readSimulating 的 setter 和 getter
+    fun setReadSimulating(readSimulating: Boolean) {
+        config.readSimulating = readSimulating
+    }
+
+    fun getReadSimulating(): Boolean {
+        return config.readSimulating
+    }
+
+    // startDate 的 setter 和 getter
+    fun setStartDate(startDate: LocalDate?) {
+        config.startDate = startDate
+    }
+
+    fun getStartDate(): LocalDate? {
+        if (!config.readSimulating || config.startDate == null) {
+            return LocalDate.now()
+        }
+        return config.startDate
+    }
+
+    // startChapter 的 setter 和 getter
+    fun setStartChapter(startChapter: Int) {
+        config.startChapter = startChapter
+    }
+
+    fun getStartChapter(): Int {
+        if (config.readSimulating) return config.startChapter ?: 0
+        return this.durChapterIndex
+    }
+
+    // dailyChapters 的 setter 和 getter
+    fun setDailyChapters(dailyChapters: Int) {
+        config.dailyChapters = dailyChapters
+    }
+
+    fun getDailyChapters(): Int {
+        return config.dailyChapters
+    }
+
     fun getDelTag(tag: Long): Boolean {
         return config.delTag and tag == tag
     }
 
+    fun addDelTag(tag: Long) {
+        config.delTag = config.delTag and tag
+    }
+
+    fun removeDelTag(tag: Long) {
+        config.delTag = config.delTag and tag.inv()
+    }
+
     fun getFolderName(): String {
+        folderName?.let {
+            return it
+        }
         //防止书名过长,只取9位
-        var folderName = name.replace(AppPattern.fileNameRegex, "")
-        folderName = folderName.substring(0, min(9, folderName.length))
-        return folderName + MD5Utils.md5Encode16(bookUrl)
+        folderName = getFolderNameNoCache()
+        return folderName!!
+    }
+
+    fun getFolderNameNoCache(): String {
+        return name.replace(AppPattern.fileNameRegex, "").let {
+            it.substring(0, min(9, it.length)) + MD5Utils.md5Encode16(bookUrl)
+        }
     }
 
     fun toSearchBook() = SearchBook(
@@ -270,8 +349,24 @@ data class Book(
         newBook.durChapterIndex = BookHelp
             .getDurChapter(durChapterIndex, durChapterTitle, toc, totalChapterNum)
         newBook.durChapterTitle = toc[newBook.durChapterIndex].getDisplayTitle(
-            ContentProcessor.get(newBook.name, newBook.origin).getTitleReplaceRules()
+            ContentProcessor.get(newBook.name, newBook.origin).getTitleReplaceRules(),
+            getUseReplaceRule()
         )
+        newBook.durChapterPos = durChapterPos
+        newBook.durChapterTime = durChapterTime
+        newBook.group = group
+        newBook.order = order
+        newBook.customCoverUrl = customCoverUrl
+        newBook.customIntro = customIntro
+        newBook.customTag = customTag
+        newBook.canUpdate = canUpdate
+        newBook.readConfig = readConfig
+        return newBook
+    }
+
+    fun updateTo(newBook: Book): Book {
+        newBook.durChapterIndex = durChapterIndex
+        newBook.durChapterTitle = durChapterTitle
         newBook.durChapterPos = durChapterPos
         newBook.durChapterTime = durChapterTime
         newBook.group = group
@@ -306,12 +401,14 @@ data class Book(
         appDb.bookDao.delete(this)
     }
 
+    @Suppress("ConstPropertyName")
     companion object {
         const val hTag = 2L
         const val rubyTag = 4L
         const val imgStyleDefault = "DEFAULT"
         const val imgStyleFull = "FULL"
         const val imgStyleText = "TEXT"
+        const val imgStyleSingle = "SINGLE"
     }
 
     @Parcelize
@@ -323,7 +420,11 @@ data class Book(
         var useReplaceRule: Boolean? = null,// 正文使用净化替换规则
         var delTag: Long = 0L,//去除标签
         var ttsEngine: String? = null,
-        var splitLongChapter: Boolean = true
+        var splitLongChapter: Boolean = true,
+        var readSimulating: Boolean = false,
+        var startDate: LocalDate? = null,
+        var startChapter: Int? = null,     // 用户设置的起始章节
+        var dailyChapters: Int = 3    // 用户设置的每日更新章节数
     ) : Parcelable
 
     class Converters {

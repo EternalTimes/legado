@@ -6,16 +6,35 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
-import android.view.*
-import android.webkit.*
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.WindowManager
+import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
+import android.webkit.URLUtil
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.addCallback
 import androidx.activity.viewModels
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.size
+import androidx.lifecycle.lifecycleScope
+import com.script.rhino.RhinoScriptEngine
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppConst.imagePathKey
+import io.legado.app.constant.AppLog
+import io.legado.app.data.entities.RssSource
 import io.legado.app.databinding.ActivityRssReadBinding
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.http.CookieManager
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.accentColor
@@ -24,21 +43,44 @@ import io.legado.app.model.Download
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.login.SourceLoginActivity
-import io.legado.app.utils.*
+import io.legado.app.ui.rss.favorites.RssFavoritesDialog
+import io.legado.app.utils.ACache
+import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.get
+import io.legado.app.utils.gone
+import io.legado.app.utils.invisible
+import io.legado.app.utils.isTrue
+import io.legado.app.utils.keepScreenOn
+import io.legado.app.utils.longSnackbar
+import io.legado.app.utils.openUrl
+import io.legado.app.utils.setDarkeningAllowed
+import io.legado.app.utils.setTintMutate
+import io.legado.app.utils.share
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.splitNotBlank
+import io.legado.app.utils.startActivity
+import io.legado.app.utils.textArray
+import io.legado.app.utils.toastOnUi
+import io.legado.app.utils.toggleNavigationBar
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import io.legado.app.utils.visible
 import kotlinx.coroutines.launch
 import org.apache.commons.text.StringEscapeUtils
 import org.jsoup.Jsoup
+import splitties.views.bottomPadding
 import java.io.ByteArrayInputStream
 import java.net.URLDecoder
+import java.util.regex.PatternSyntaxException
 
 /**
  * rss阅读界面
  */
-class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>(false) {
+class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>(),
+    RssFavoritesDialog.Callback {
 
     override val binding by viewBinding(ActivityRssReadBinding::inflate)
     override val viewModel by viewModels<ReadRssViewModel>()
+
     private var starMenuItem: MenuItem? = null
     private var ttsMenuItem: MenuItem? = null
     private var customWebViewCallback: WebChromeClient.CustomViewCallback? = null
@@ -48,14 +90,32 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             viewModel.saveImage(it.value, uri)
         }
     }
+    private val rssJsExtensions by lazy { RssJsExtensions(this) }
+
+    fun getSource(): RssSource? {
+        return viewModel.rssSource
+    }
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         viewModel.upStarMenuData.observe(this) { upStarMenu() }
         viewModel.upTtsMenuData.observe(this) { upTtsMenu(it) }
         binding.titleBar.title = intent.getStringExtra("title")
+        initView()
         initWebView()
         initLiveData()
         viewModel.initData(intent)
+        onBackPressedDispatcher.addCallback(this) {
+            if (binding.customWebView.size > 0) {
+                customWebViewCallback?.onCustomViewHidden()
+                return@addCallback
+            } else if (binding.webView.canGoBack()
+                && binding.webView.copyBackForwardList().size > 1
+            ) {
+                binding.webView.goBack()
+                return@addCallback
+            }
+            finish()
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -98,7 +158,13 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
                 binding.webView.reload()
             }
 
-            R.id.menu_rss_star -> viewModel.favorite()
+            R.id.menu_rss_star -> {
+                viewModel.addFavorite()
+                viewModel.rssArticle?.let {
+                    showDialogFragment(RssFavoritesDialog(it))
+                }
+            }
+
             R.id.menu_share_it -> {
                 binding.webView.url?.let {
                     share(it)
@@ -120,12 +186,37 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         return super.onCompatOptionsItemSelected(item)
     }
 
-    @JavascriptInterface
-    fun isNightTheme(): Boolean {
-        return AppConfig.isNightTheme(this)
+    override fun updateFavorite(title: String?, group: String?) {
+        viewModel.rssArticle?.let{
+            if (title != null) {
+                it.title = title
+            }
+            if (group != null) {
+                it.group = group
+            }
+        }
+        viewModel.updateFavorite()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    override fun deleteFavorite() {
+        viewModel.delFavorite()
+    }
+
+    @JavascriptInterface
+    fun isNightTheme(): Boolean {
+        return AppConfig.isNightTheme
+    }
+
+    private fun initView() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, windowInsets ->
+            val typeMask = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
+            val insets = windowInsets.getInsets(typeMask)
+            binding.root.bottomPadding = insets.bottom
+            windowInsets
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     private fun initWebView() {
         binding.progressBar.fontColor = accentColor
         binding.webView.webChromeClient = CustomWebChromeClient()
@@ -216,6 +307,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         }
         viewModel.urlLiveData.observe(this) {
             upJavaScriptEnable()
+            CookieManager.applyToWebView(it.url)
             binding.webView.settings.userAgentString = it.getUserAgent()
             binding.webView.loadUrl(it.url, it.headerMap)
         }
@@ -241,7 +333,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
     }
 
     private fun upTtsMenu(isPlaying: Boolean) {
-        launch {
+        lifecycleScope.launch {
             if (isPlaying) {
                 ttsMenuItem?.setIcon(R.drawable.ic_stop_black_24dp)
                 ttsMenuItem?.setTitle(R.string.aloud_stop)
@@ -251,33 +343,6 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             }
             ttsMenuItem?.icon?.setTintMutate(primaryTextColor)
         }
-    }
-
-    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_BACK -> {
-                finish()
-                return true
-            }
-        }
-        return super.onKeyLongPress(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        event?.let {
-            when (keyCode) {
-                KeyEvent.KEYCODE_BACK -> if (event.isTracking && !event.isCanceled && binding.webView.canGoBack()) {
-                    if (binding.customWebView.size > 0) {
-                        customWebViewCallback?.onCustomViewHidden()
-                        return true
-                    } else if (binding.webView.copyBackForwardList().size > 1) {
-                        binding.webView.goBack()
-                        return true
-                    }
-                }
-            }
-        }
-        return super.onKeyUp(keyCode, event)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -317,12 +382,16 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             binding.llView.invisible()
             binding.customWebView.addView(view)
             customWebViewCallback = callback
+            keepScreenOn(true)
+            toggleNavigationBar(false)
         }
 
         override fun onHideCustomView() {
             binding.customWebView.removeAllViews()
             binding.llView.visible()
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            keepScreenOn(false)
+            toggleNavigationBar(true)
         }
     }
 
@@ -350,24 +419,32 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             request: WebResourceRequest
         ): WebResourceResponse? {
             val url = request.url.toString()
-            viewModel.rssSource?.let { source ->
-                val blacklist = source.contentBlacklist?.splitNotBlank(",")
-                if (!blacklist.isNullOrEmpty()) {
-                    blacklist.forEach {
+            val source = viewModel.rssSource ?: return super.shouldInterceptRequest(view, request)
+            val blacklist = source.contentBlacklist?.splitNotBlank(",")
+            if (!blacklist.isNullOrEmpty()) {
+                blacklist.forEach {
+                    try {
                         if (url.startsWith(it) || url.matches(it.toRegex())) {
                             return createEmptyResource()
                         }
+                    } catch (e: PatternSyntaxException) {
+                        AppLog.put("黑名单规则正则语法错误 源名称:${source.sourceName} 正则:$it", e)
                     }
-                } else {
-                    val whitelist = source.contentWhitelist?.splitNotBlank(",")
-                    if (!whitelist.isNullOrEmpty()) {
-                        whitelist.forEach {
+                }
+            } else {
+                val whitelist = source.contentWhitelist?.splitNotBlank(",")
+                if (!whitelist.isNullOrEmpty()) {
+                    whitelist.forEach {
+                        try {
                             if (url.startsWith(it) || url.matches(it.toRegex())) {
                                 return super.shouldInterceptRequest(view, request)
                             }
+                        } catch (e: PatternSyntaxException) {
+                            val msg = "白名单规则正则语法错误 源名称:${source.sourceName} 正则:$it"
+                            AppLog.put(msg, e)
                         }
-                        return createEmptyResource()
                     }
+                    return createEmptyResource()
                 }
             }
             return super.shouldInterceptRequest(view, request)
@@ -398,6 +475,21 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         }
 
         private fun shouldOverrideUrlLoading(url: Uri): Boolean {
+            val source = viewModel.rssSource
+            val js = source?.shouldOverrideUrlLoading
+            if (!js.isNullOrBlank()) {
+                val result = RhinoScriptEngine.runCatching {
+                    eval(js) {
+                        put("java", rssJsExtensions)
+                        put("url", url.toString())
+                    }.toString()
+                }.onFailure {
+                    AppLog.put("url跳转拦截js出错", it)
+                }.getOrNull()
+                if (result.isTrue()) {
+                    return true
+                }
+            }
             when (url.scheme) {
                 "http", "https", "jsbridge" -> {
                     return false

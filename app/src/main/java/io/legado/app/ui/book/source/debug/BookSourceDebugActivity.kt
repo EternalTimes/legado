@@ -7,6 +7,7 @@ import android.view.MenuItem
 import android.view.View
 import androidx.activity.viewModels
 import androidx.appcompat.widget.SearchView
+import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.databinding.ActivitySourceDebugBinding
@@ -16,9 +17,11 @@ import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.qrcode.QrCodeResult
 import io.legado.app.ui.widget.dialog.TextDialog
+import io.legado.app.utils.applyNavigationBarPadding
 import io.legado.app.utils.launch
 import io.legado.app.utils.setEdgeEffectColor
 import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.showHelp
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.launch
@@ -47,7 +50,7 @@ class BookSourceDebugActivity : VMBaseActivity<ActivitySourceDebugBinding, BookS
             initHelpView()
         }
         viewModel.observe { state, msg ->
-            launch {
+            lifecycleScope.launch {
                 adapter.addItem(msg)
                 if (state == -1 || state == 1000) {
                     binding.rotateLoading.gone()
@@ -59,6 +62,7 @@ class BookSourceDebugActivity : VMBaseActivity<ActivitySourceDebugBinding, BookS
     private fun initRecyclerView() {
         binding.recyclerView.setEdgeEffectColor(primaryColor)
         binding.recyclerView.adapter = adapter
+        binding.recyclerView.applyNavigationBarPadding()
         binding.rotateLoading.loadingColor = accentColor
     }
 
@@ -113,7 +117,7 @@ class BookSourceDebugActivity : VMBaseActivity<ActivitySourceDebugBinding, BookS
         binding.textContent.onClick {
             prefixAutoComplete("--")
         }
-        launch {
+        lifecycleScope.launch {
             val exploreKinds = viewModel.bookSource?.exploreKinds()?.filter {
                 !it.url.isNullOrBlank()
             }
@@ -126,7 +130,8 @@ class BookSourceDebugActivity : VMBaseActivity<ActivitySourceDebugBinding, BookS
                     return@launch
                 }
             }
-            exploreKinds?.map { it.title }?.let { exploreKindTitles ->
+            @Suppress("USELESS_ELVIS")
+            exploreKinds?.map { it.title ?: "" }?.let { exploreKindTitles ->
                 binding.textFx.onLongClick {
                     selector("选择发现", exploreKindTitles) { _, index ->
                         val explore = exploreKinds[index]
@@ -183,14 +188,9 @@ class BookSourceDebugActivity : VMBaseActivity<ActivitySourceDebugBinding, BookS
             R.id.menu_book_src -> showDialogFragment(TextDialog("html", viewModel.bookSrc))
             R.id.menu_toc_src -> showDialogFragment(TextDialog("html", viewModel.tocSrc))
             R.id.menu_content_src -> showDialogFragment(TextDialog("html", viewModel.contentSrc))
-            R.id.menu_help -> showHelp()
+            R.id.menu_help -> showHelp("debugHelp")
         }
         return super.onCompatOptionsItemSelected(item)
-    }
-
-    private fun showHelp() {
-        val text = String(assets.open("help/debugHelp.md").readBytes())
-        showDialogFragment(TextDialog(getString(R.string.help), text, TextDialog.Mode.MD))
     }
 
 }

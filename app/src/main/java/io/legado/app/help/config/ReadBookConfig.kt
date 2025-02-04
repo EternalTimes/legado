@@ -11,7 +11,6 @@ import io.legado.app.constant.PageAnim
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.DefaultData
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
@@ -39,6 +38,7 @@ import java.io.File
 /**
  * 阅读界面配置
  */
+@Suppress("ConstPropertyName")
 @Keep
 object ReadBookConfig {
     const val configFileName = "readConfig.json"
@@ -56,6 +56,7 @@ object ReadBookConfig {
             }
         }
 
+    var isComic: Boolean = false
     var bg: Drawable? = null
     var bgMeanColor: Int = 0
     val textColor: Int get() = durConfig.curTextColor()
@@ -131,11 +132,31 @@ object ReadBookConfig {
         }
     }
 
+    fun getAllPicBgStr(): ArrayList<String> {
+        val list = arrayListOf<String>()
+        configList.forEach {
+            if (it.bgType == 2) {
+                list.add(it.bgStr)
+            }
+            if (it.bgTypeNight == 2) {
+                list.add(it.bgStrNight)
+            }
+            if (it.bgTypeEInk == 2) {
+                list.add(it.bgStrEInk)
+            }
+        }
+        return list
+    }
+
     fun deleteDur(): Boolean {
         if (configList.size > 5) {
-            configList.removeAt(styleSelect)
-            if (styleSelect > 0) {
-                styleSelect -= 1
+            val removeIndex = styleSelect
+            configList.removeAt(removeIndex)
+            if (removeIndex <= readStyleSelect) {
+                readStyleSelect -= 1
+            }
+            if (removeIndex <= comicStyleSelect) {
+                comicStyleSelect -= 1
             }
             return true
         }
@@ -157,11 +178,27 @@ object ReadBookConfig {
             field = value
             appCtx.putPrefInt(PreferKey.autoReadSpeed, value)
         }
-    var styleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
+    var styleSelect: Int
+        get() = if (isComic) comicStyleSelect else readStyleSelect
+        set(value) {
+            if (isComic) {
+                comicStyleSelect = value
+            } else {
+                readStyleSelect = value
+            }
+        }
+    var readStyleSelect = appCtx.getPrefInt(PreferKey.readStyleSelect)
         set(value) {
             field = value
             if (appCtx.getPrefInt(PreferKey.readStyleSelect) != value) {
                 appCtx.putPrefInt(PreferKey.readStyleSelect, value)
+            }
+        }
+    var comicStyleSelect = appCtx.getPrefInt(PreferKey.comicStyleSelect, readStyleSelect)
+        set(value) {
+            field = value
+            if (appCtx.getPrefInt(PreferKey.comicStyleSelect) != value) {
+                appCtx.putPrefInt(PreferKey.comicStyleSelect, value)
             }
         }
     var shareLayout = appCtx.getPrefBoolean(PreferKey.shareLayout)
@@ -425,6 +462,7 @@ object ReadBookConfig {
                 }
                 if (config.bgType == 2) {
                     val bgName = FileUtils.getName(config.bgStr)
+                    config.bgStr = bgName
                     val bgPath = FileUtils.getPath(appCtx.externalFiles, "bg", bgName)
                     if (!FileUtils.exist(bgPath)) {
                         val bgFile = configDir.getFile(bgName)
@@ -436,6 +474,7 @@ object ReadBookConfig {
                 }
                 if (config.bgTypeNight == 2) {
                     val bgName = FileUtils.getName(config.bgStrNight)
+                    config.bgStrNight = bgName
                     val bgPath = FileUtils.getPath(appCtx.externalFiles, "bg", bgName)
                     if (!FileUtils.exist(bgPath)) {
                         val bgFile = configDir.getFile(bgName)
@@ -447,6 +486,7 @@ object ReadBookConfig {
                 }
                 if (config.bgTypeEInk == 2) {
                     val bgName = FileUtils.getName(config.bgStrEInk)
+                    config.bgStrEInk = bgName
                     val bgPath = FileUtils.getPath(appCtx.externalFiles, "bg", bgName)
                     if (!FileUtils.exist(bgPath)) {
                         val bgFile = configDir.getFile(bgName)
@@ -478,7 +518,7 @@ object ReadBookConfig {
         private var textColorNight: String = "#ADADAD",//夜间文字颜色
         private var textColorEInk: String = "#000000",
         private var pageAnim: Int = 0,//翻页动画
-        private var pageAnimEInk: Int = 3,
+        private var pageAnimEInk: Int = 4,
         var textFont: String = "",//字体
         var textBold: Int = 0,//是否粗体字 0:正常, 1:粗体, 2:细体
         var textSize: Int = 20,//文字大小
@@ -517,20 +557,52 @@ object ReadBookConfig {
         var footerMode: Int = 0
     ) {
 
+        @Transient
+        private var textColorIntEInk = -1
+
+        @Transient
+        private var textColorIntNight = -1
+
+        @Transient
+        private var textColorInt = -1
+
+        @Transient
+        private var initColorInt = false
+
+        private fun initColorInt() {
+            textColorIntEInk = Color.parseColor(textColorEInk)
+            textColorIntNight = Color.parseColor(textColorNight)
+            textColorInt = Color.parseColor(textColor)
+            initColorInt = true
+        }
+
         fun setCurTextColor(color: Int) {
             when {
-                AppConfig.isEInkMode -> textColorEInk = "#${color.hexString}"
-                AppConfig.isNightTheme -> textColorNight = "#${color.hexString}"
-                else -> textColor = "#${color.hexString}"
+                AppConfig.isEInkMode -> {
+                    textColorEInk = "#${color.hexString}"
+                    textColorIntEInk = color
+                }
+
+                AppConfig.isNightTheme -> {
+                    textColorNight = "#${color.hexString}"
+                    textColorIntNight = color
+                }
+
+                else -> {
+                    textColor = "#${color.hexString}"
+                    textColorInt = color
+                }
             }
-            ChapterProvider.upStyle()
         }
 
         fun curTextColor(): Int {
+            if (!initColorInt) {
+                initColorInt()
+            }
             return when {
-                AppConfig.isEInkMode -> Color.parseColor(textColorEInk)
-                AppConfig.isNightTheme -> Color.parseColor(textColorNight)
-                else -> Color.parseColor(textColor)
+                AppConfig.isEInkMode -> textColorIntEInk
+                AppConfig.isNightTheme -> textColorIntNight
+                else -> textColorInt
             }
         }
 
@@ -570,10 +642,12 @@ object ReadBookConfig {
                     bgTypeEInk = bgType
                     bgStrEInk = bg
                 }
+
                 AppConfig.isNightTheme -> {
                     bgTypeNight = bgType
                     bgStrNight = bg
                 }
+
                 else -> {
                     this.bgType = bgType
                     bgStr = bg
@@ -611,8 +685,13 @@ object ReadBookConfig {
                         val bitmap = BitmapUtils.decodeAssetsBitmap(appCtx, path, width, height)
                         BitmapDrawable(resources, bitmap?.resizeAndRecycle(width, height))
                     }
+
                     else -> {
-                        val bitmap = BitmapUtils.decodeBitmap(curBgStr(), width, height)
+                        val path = curBgStr().let {
+                            if (it.contains(File.separator)) it
+                            else FileUtils.getPath(appCtx.externalFiles, "bg", curBgStr())
+                        }
+                        val bitmap = BitmapUtils.decodeBitmap(path, width, height)
                         BitmapDrawable(resources, bitmap?.resizeAndRecycle(width, height))
                     }
                 }

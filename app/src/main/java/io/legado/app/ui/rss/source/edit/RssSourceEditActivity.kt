@@ -6,6 +6,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.widget.EditText
 import androidx.activity.viewModels
+import androidx.core.view.ViewCompat
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.tabs.TabLayout
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import io.legado.app.R
@@ -22,26 +24,38 @@ import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.qrcode.QrCodeResult
 import io.legado.app.ui.rss.source.debug.RssSourceDebugActivity
-import io.legado.app.ui.widget.dialog.TextDialog
 import io.legado.app.ui.widget.dialog.UrlOptionDialog
 import io.legado.app.ui.widget.dialog.VariableDialog
 import io.legado.app.ui.widget.keyboard.KeyboardToolPop
 import io.legado.app.ui.widget.text.EditEntity
-import io.legado.app.utils.*
+import io.legado.app.utils.GSON
+import io.legado.app.utils.imeHeight
+import io.legado.app.utils.isContentScheme
+import io.legado.app.utils.isTrue
+import io.legado.app.utils.launch
+import io.legado.app.utils.navigationBarHeight
+import io.legado.app.utils.sendToClip
+import io.legado.app.utils.setEdgeEffectColor
+import io.legado.app.utils.share
+import io.legado.app.utils.shareWithQr
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.showHelp
+import io.legado.app.utils.startActivity
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import splitties.views.bottomPadding
 
 class RssSourceEditActivity :
-    VMBaseActivity<ActivityRssSourceEditBinding, RssSourceEditViewModel>(false),
+    VMBaseActivity<ActivityRssSourceEditBinding, RssSourceEditViewModel>(),
     KeyboardToolPop.CallBack,
     VariableDialog.Callback {
 
     override val binding by viewBinding(ActivityRssSourceEditBinding::inflate)
     override val viewModel by viewModels<RssSourceEditViewModel>()
     private val softKeyboardTool by lazy {
-        KeyboardToolPop(this, this, binding.root, this)
+        KeyboardToolPop(this, lifecycleScope, binding.root, this)
     }
     private val adapter by lazy { RssSourceEditAdapter() }
     private val sourceEntities: ArrayList<EditEntity> = ArrayList()
@@ -116,17 +130,20 @@ class RssSourceEditActivity :
                 setResult(Activity.RESULT_OK)
                 finish()
             }
+
             R.id.menu_debug_source -> viewModel.save(getRssSource()) { source ->
                 startActivity<RssSourceDebugActivity> {
                     putExtra("key", source.sourceUrl)
                 }
             }
+
             R.id.menu_login -> viewModel.save(getRssSource()) {
                 startActivity<SourceLoginActivity> {
                     putExtra("type", "rssSource")
                     putExtra("key", it.sourceUrl)
                 }
             }
+
             R.id.menu_set_source_variable -> setSourceVariable()
             R.id.menu_clear_cookie -> viewModel.clearCookie(getRssSource().sourceUrl)
             R.id.menu_auto_complete -> viewModel.autoComplete = !viewModel.autoComplete
@@ -139,6 +156,7 @@ class RssSourceEditActivity :
                 getString(R.string.share_rss_source),
                 ErrorCorrectionLevel.L
             )
+
             R.id.menu_help -> showHelp("ruleHelp")
         }
         return super.onCompatOptionsItemSelected(item)
@@ -171,6 +189,13 @@ class RssSourceEditActivity :
                 setEditEntities(tab?.position)
             }
         })
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, windowInsets ->
+            val navigationBarHeight = windowInsets.navigationBarHeight
+            val imeHeight = windowInsets.imeHeight
+            binding.recyclerView.bottomPadding = if (imeHeight == 0) navigationBarHeight else 0
+            softKeyboardTool.initialPadding = imeHeight
+            windowInsets
+        }
     }
 
     private fun setEditEntities(tabPosition: Int?) {
@@ -239,6 +264,13 @@ class RssSourceEditActivity :
             add(EditEntity("injectJs", rs.injectJs, R.string.r_inject_js))
             add(EditEntity("contentWhitelist", rs.contentWhitelist, R.string.c_whitelist))
             add(EditEntity("contentBlacklist", rs.contentBlacklist, R.string.c_blacklist))
+            add(
+                EditEntity(
+                    "shouldOverrideUrlLoading",
+                    rs.shouldOverrideUrlLoading,
+                    "url跳转拦截(js, 返回true拦截,js变量url,可以通过js打开url,比如调用阅读搜索,添加书架等,简化规则写法,不用webView js注入)"
+                )
+            )
         }
         binding.tabLayout.selectTab(binding.tabLayout.getTabAt(0))
         setEditEntities(0)
@@ -272,14 +304,19 @@ class RssSourceEditActivity :
                 "ruleArticles" -> source.ruleArticles = it.value
                 "ruleNextPage" -> source.ruleNextPage =
                     viewModel.ruleComplete(it.value, source.ruleArticles, 2)
+
                 "ruleTitle" -> source.ruleTitle =
                     viewModel.ruleComplete(it.value, source.ruleArticles)
+
                 "rulePubDate" -> source.rulePubDate =
                     viewModel.ruleComplete(it.value, source.ruleArticles)
+
                 "ruleDescription" -> source.ruleDescription =
                     viewModel.ruleComplete(it.value, source.ruleArticles)
+
                 "ruleImage" -> source.ruleImage =
                     viewModel.ruleComplete(it.value, source.ruleArticles, 3)
+
                 "ruleLink" -> source.ruleLink =
                     viewModel.ruleComplete(it.value, source.ruleArticles)
             }
@@ -290,10 +327,12 @@ class RssSourceEditActivity :
                 "loadWithBaseUrl" -> source.loadWithBaseUrl = it.value.isTrue()
                 "ruleContent" -> source.ruleContent =
                     viewModel.ruleComplete(it.value, source.ruleArticles)
+
                 "style" -> source.style = it.value
                 "injectJs" -> source.injectJs = it.value
                 "contentWhitelist" -> source.contentWhitelist = it.value
                 "contentBlacklist" -> source.contentBlacklist = it.value
+                "shouldOverrideUrlLoading" -> source.shouldOverrideUrlLoading = it.value
             }
         }
         return source
@@ -301,8 +340,9 @@ class RssSourceEditActivity :
 
     private fun setSourceVariable() {
         viewModel.save(getRssSource()) { source ->
-            launch {
-                val comment = source.getDisplayVariableComment("源变量可在js中通过source.getVariable()获取")
+            lifecycleScope.launch {
+                val comment =
+                    source.getDisplayVariableComment("源变量可在js中通过source.getVariable()获取")
                 val variable = withContext(Dispatchers.IO) { source.getVariable() }
                 showDialogFragment(
                     VariableDialog(
@@ -335,6 +375,7 @@ class RssSourceEditActivity :
             "urlOption" -> UrlOptionDialog(this) {
                 sendText(it)
             }.show()
+
             "ruleHelp" -> showHelp("ruleHelp")
             "jsHelp" -> showHelp("jsHelp")
             "regexHelp" -> showHelp("regexHelp")
@@ -357,12 +398,6 @@ class RssSourceEditActivity :
                 edit.replace(start, end, text)//光标所在位置插入文字
             }
         }
-    }
-
-    private fun showHelp(fileName: String) {
-        //显示目录help下的帮助文档
-        val mdText = String(assets.open("help/${fileName}.md").readBytes())
-        showDialogFragment(TextDialog(getString(R.string.help), mdText, TextDialog.Mode.MD))
     }
 
 }

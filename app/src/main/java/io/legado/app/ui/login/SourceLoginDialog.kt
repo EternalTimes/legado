@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.core.view.setPadding
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
@@ -15,10 +16,19 @@ import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.databinding.DialogLoginBinding
 import io.legado.app.databinding.ItemFilletTextBinding
 import io.legado.app.databinding.ItemSourceEditBinding
+import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.about.AppLogDialog
-import io.legado.app.utils.*
+import io.legado.app.utils.GSON
+import io.legado.app.utils.applyTint
+import io.legado.app.utils.dpToPx
+import io.legado.app.utils.isAbsUrl
+import io.legado.app.utils.openUrl
+import io.legado.app.utils.printOnDebug
+import io.legado.app.utils.setLayout
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
@@ -55,6 +65,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true) {
                     it.textInputLayout.hint = rowUi.name
                     it.editText.setText(loginInfo?.get(rowUi.name))
                 }
+
                 RowUi.Type.password -> ItemSourceEditBinding.inflate(
                     layoutInflater,
                     binding.root,
@@ -67,35 +78,19 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true) {
                         InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_CLASS_TEXT
                     it.editText.setText(loginInfo?.get(rowUi.name))
                 }
+
                 RowUi.Type.button -> ItemFilletTextBinding.inflate(
                     layoutInflater,
                     binding.root,
                     false
                 ).let {
                     binding.flexbox.addView(it.root)
+                    rowUi.style().apply(it.root)
                     it.root.id = index + 1000
                     it.textView.text = rowUi.name
                     it.textView.setPadding(16.dpToPx())
                     it.root.onClick {
-                        if (rowUi.action.isAbsUrl()) {
-                            context?.openUrl(rowUi.action!!)
-                        } else {
-                            // JavaScript
-                            rowUi.action?.let { buttonFunctionJS ->
-                                kotlin.runCatching {
-                                    source.getLoginJs()?.let { loginJS ->
-                                        source.evalJS("$loginJS\n$buttonFunctionJS") {
-                                            put("result", getLoginData(loginUi))
-                                        }
-                                    }
-                                }.onFailure { e ->
-                                    AppLog.put(
-                                        "LoginUI Button ${rowUi.name} JavaScript error",
-                                        e
-                                    )
-                                }
-                            }
-                        }
+                        handleButtonClick(source, rowUi, loginUi)
                     }
                 }
             }
@@ -108,16 +103,37 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true) {
                     val loginData = getLoginData(loginUi)
                     login(source, loginData)
                 }
+
                 R.id.menu_show_login_header -> alert {
                     setTitle(R.string.login_header)
                     source.getLoginHeader()?.let { loginHeader ->
                         setMessage(loginHeader)
                     }
                 }
+
                 R.id.menu_del_login_header -> source.removeLoginHeader()
                 R.id.menu_log -> showDialogFragment<AppLogDialog>()
             }
             return@setOnMenuItemClickListener true
+        }
+    }
+
+    private fun handleButtonClick(source: BaseSource, rowUi: RowUi, loginUi: List<RowUi>) {
+        Coroutine.async {
+            if (rowUi.action.isAbsUrl()) {
+                context?.openUrl(rowUi.action!!)
+            } else if (rowUi.action != null) {
+                // JavaScript
+                val buttonFunctionJS = rowUi.action!!
+                val loginJS = source.getLoginJs() ?: return@async
+                kotlin.runCatching {
+                    source.evalJS("$loginJS\n$buttonFunctionJS") {
+                        put("result", getLoginData(loginUi))
+                    }
+                }.onFailure { e ->
+                    AppLog.put("LoginUI Button ${rowUi.name} JavaScript error", e)
+                }
+            }
         }
     }
 
@@ -137,7 +153,7 @@ class SourceLoginDialog : BaseDialogFragment(R.layout.dialog_login, true) {
     }
 
     private fun login(source: BaseSource, loginData: HashMap<String, String>) {
-        launch(IO) {
+        lifecycleScope.launch(IO) {
             if (loginData.isEmpty()) {
                 source.removeLoginInfo()
                 withContext(Main) {
