@@ -1,10 +1,14 @@
 package io.legado.app
 
-import com.script.SimpleBindings
+import cn.hutool.core.lang.JarClassLoader
+import com.script.ScriptBindings
 import com.script.rhino.RhinoScriptEngine
+import dalvik.system.DexClassLoader
 import org.intellij.lang.annotations.Language
 import org.junit.Assert
 import org.junit.Test
+import org.mozilla.javascript.DefiningClassLoader
+import java.net.URLClassLoader
 
 class AndroidJsTest {
 
@@ -43,15 +47,29 @@ class AndroidJsTest {
             returnData.getErrorMsg()
         """.trimIndent()
         val result1 = RhinoScriptEngine.eval(js1)
-        Assert.assertEquals(result1, "未知错误,请联系开发者!").let {
+        Assert.assertEquals(result1, "未知错误,请联系开发者!")
+    }
 
-        }
+    @Test
+    fun testPackages1() {
+        URLClassLoader.getSystemClassLoader()
+        DefiningClassLoader.getSystemClassLoader()
+        JarClassLoader.getSystemClassLoader()
+        DexClassLoader.getSystemClassLoader()
+        @Language("js")
+        val js = """
+            var ji = new JavaImporter(Packages.org.mozilla.javascript.DefiningClassLoader)
+            with(ji) {
+              let x = DefiningClassLoader.getSystemClassLoader()
+            }
+        """.trimIndent()
+        RhinoScriptEngine.eval(js)
     }
 
     @Test
     fun testMap() {
         val map = hashMapOf("id" to "3242532321")
-        val bindings = SimpleBindings()
+        val bindings = ScriptBindings()
         bindings["result"] = map
         @Language("js")
         val jsMap = "$=result;id=$.id;id"

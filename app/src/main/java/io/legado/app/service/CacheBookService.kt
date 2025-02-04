@@ -2,13 +2,16 @@ package io.legado.app.service
 
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.BaseService
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.IntentAction
+import io.legado.app.constant.NotificationId
 import io.legado.app.data.appDb
+import io.legado.app.help.book.update
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.CacheBook
 import io.legado.app.model.webBook.WebBook
@@ -16,12 +19,21 @@ import io.legado.app.ui.book.cache.CacheActivity
 import io.legado.app.utils.activityPendingIntent
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.servicePendingIntent
-import io.legado.app.utils.toastOnUi
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import splitties.init.appCtx
+import splitties.systemservices.notificationManager
 import java.util.concurrent.Executors
 import kotlin.math.min
 
+/**
+ * 缓存书籍服务
+ */
 class CacheBookService : BaseService() {
 
     companion object {
@@ -34,10 +46,12 @@ class CacheBookService : BaseService() {
         Executors.newFixedThreadPool(min(threadCount, AppConst.MAX_THREAD)).asCoroutineDispatcher()
     private var downloadJob: Job? = null
     private var notificationContent = appCtx.getString(R.string.service_starting)
+    private var mutex = Mutex()
     private val notificationBuilder by lazy {
         val builder = NotificationCompat.Builder(this, AppConst.channelIdDownload)
             .setSmallIcon(R.drawable.ic_download)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentTitle(getString(R.string.offline_cache))
             .setContentIntent(activityPendingIntent<CacheActivity>("cacheActivity"))
         builder.addAction(
@@ -51,11 +65,12 @@ class CacheBookService : BaseService() {
     override fun onCreate() {
         super.onCreate()
         isRun = true
-        launch {
+        CacheBook.clear()
+        lifecycleScope.launch {
             while (isActive) {
                 delay(1000)
                 notificationContent = CacheBook.downloadSummary
-                upNotification()
+                upCacheBookNotification()
                 postEvent(EventBus.UP_DOWNLOAD, "")
             }
         }
@@ -69,6 +84,7 @@ class CacheBookService : BaseService() {
                     intent.getIntExtra("start", 0),
                     intent.getIntExtra("end", 0)
                 )
+
                 IntentAction.remove -> removeDownload(intent.getStringExtra("bookUrl"))
                 IntentAction.stop -> stopSelf()
             }
@@ -79,8 +95,7 @@ class CacheBookService : BaseService() {
     override fun onDestroy() {
         isRun = false
         cachePool.close()
-        CacheBook.cacheBookMap.forEach { it.value.stop() }
-        CacheBook.cacheBookMap.clear()
+        CacheBook.close()
         super.onDestroy()
         postEvent(EventBus.UP_DOWNLOAD, "")
     }
@@ -90,27 +105,45 @@ class CacheBookService : BaseService() {
         execute {
             val cacheBook = CacheBook.getOrCreate(bookUrl) ?: return@execute
             val chapterCount = appDb.bookChapterDao.getChapterCount(bookUrl)
+            val book = cacheBook.book
             if (chapterCount == 0) {
-                val name = cacheBook.book.name
-                WebBook.getChapterListAwait(cacheBook.bookSource, cacheBook.book).onFailure {
-                    cacheBook.book.totalChapterNum = 0
-                    AppLog.put("《$name》目录为空且加载目录失败\n${it.localizedMessage}", it)
-                    appCtx.toastOnUi("《$name》目录为空且加载目录失败\n${it.localizedMessage}")
-                }.getOrNull()?.let { toc ->
-                    appDb.bookChapterDao.insert(*toc.toTypedArray())
+                mutex.withLock {
+                    val name = book.name
+                    if (book.tocUrl.isEmpty()) {
+                        kotlin.runCatching {
+                            WebBook.getBookInfoAwait(cacheBook.bookSource, book)
+                        }.onFailure {
+                            val msg = "《$name》目录为空且加载详情页失败\n${it.localizedMessage}"
+                            AppLog.put(msg, it, true)
+                            return@execute
+                        }
+                    }
+                    WebBook.getChapterListAwait(cacheBook.bookSource, book).onFailure {
+                        if (book.totalChapterNum > 0) {
+                            book.totalChapterNum = 0
+                            book.update()
+                        }
+                        val msg = "《$name》目录为空且加载目录失败\n${it.localizedMessage}"
+                        AppLog.put(msg, it, true)
+                        return@execute
+                    }.getOrNull()?.let { toc ->
+                        appDb.bookChapterDao.insert(*toc.toTypedArray())
+                    }
+                    book.update()
                 }
-                cacheBook.book.save()
             }
-            val end2 = if (end == 0) {
-                appDb.bookChapterDao.getChapterCount(bookUrl)
+            val end2 = if (end < 0) {
+                book.lastChapterIndex
             } else {
-                end
+                min(end, book.lastChapterIndex)
             }
             cacheBook.addDownload(start, end2)
             notificationContent = CacheBook.downloadSummary
-            upNotification()
-            if (downloadJob == null) {
-                download()
+            upCacheBookNotification()
+            synchronized(this) {
+                if (downloadJob == null) {
+                    download()
+                }
             }
         }
     }
@@ -129,7 +162,7 @@ class CacheBookService : BaseService() {
 
     private fun download() {
         downloadJob?.cancel()
-        downloadJob = launch(cachePool) {
+        downloadJob = lifecycleScope.launch(cachePool) {
             while (isActive) {
                 if (!CacheBook.isRun) {
                     CacheBook.stop(this@CacheBookService)
@@ -149,13 +182,19 @@ class CacheBookService : BaseService() {
         }
     }
 
+    private fun upCacheBookNotification() {
+        notificationBuilder.setContentText(notificationContent)
+        val notification = notificationBuilder.build()
+        notificationManager.notify(NotificationId.CacheBookService, notification)
+    }
+
     /**
      * 更新通知
      */
-    override fun upNotification() {
+    override fun startForegroundNotification() {
         notificationBuilder.setContentText(notificationContent)
         val notification = notificationBuilder.build()
-        startForeground(AppConst.notificationIdCache, notification)
+        startForeground(NotificationId.CacheBookService, notification)
     }
 
 }

@@ -10,11 +10,31 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
-import io.legado.app.utils.*
-import kotlinx.coroutines.*
+import io.legado.app.utils.ArchiveUtils
+import io.legado.app.utils.FileUtils
+import io.legado.app.utils.ImageUtils
+import io.legado.app.utils.MD5Utils
+import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.StringUtils
+import io.legado.app.utils.SvgUtils
+import io.legado.app.utils.UrlUtil
+import io.legado.app.utils.createFileIfNotExist
+import io.legado.app.utils.exists
+import io.legado.app.utils.externalFiles
+import io.legado.app.utils.getFile
+import io.legado.app.utils.isContentScheme
+import io.legado.app.utils.onEachParallel
+import io.legado.app.utils.postEvent
 import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import org.apache.commons.text.similarity.JaccardSimilarity
 import splitties.init.appCtx
 import java.io.ByteArrayInputStream
@@ -22,20 +42,21 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
-import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 import java.util.zip.ZipFile
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-@Suppress("unused")
+@Suppress("unused", "ConstPropertyName")
 object BookHelp {
     private val downloadDir: File = appCtx.externalFiles
     private const val cacheFolderName = "book_cache"
     private const val cacheImageFolderName = "images"
     private const val cacheEpubFolderName = "epub"
-    private val downloadImages = CopyOnWriteArraySet<String>()
+    private val downloadImages = ConcurrentHashMap<String, Mutex>()
 
     val cachePath = FileUtils.getPath(downloadDir, cacheFolderName)
 
@@ -51,8 +72,19 @@ object BookHelp {
     }
 
     fun updateCacheFolder(oldBook: Book, newBook: Book) {
-        val oldFolderPath = FileUtils.getPath(downloadDir, cacheFolderName, oldBook.getFolderName())
-        val newFolderPath = FileUtils.getPath(downloadDir, cacheFolderName, newBook.getFolderName())
+        val oldFolderName = oldBook.getFolderNameNoCache()
+        val newFolderName = newBook.getFolderNameNoCache()
+        if (oldFolderName == newFolderName) return
+        val oldFolderPath = FileUtils.getPath(
+            downloadDir,
+            cacheFolderName,
+            oldFolderName
+        )
+        val newFolderPath = FileUtils.getPath(
+            downloadDir,
+            cacheFolderName,
+            newFolderName
+        )
         FileUtils.move(oldFolderPath, newFolderPath)
     }
 
@@ -61,8 +93,8 @@ object BookHelp {
      */
     suspend fun clearInvalidCache() {
         withContext(IO) {
-            val bookFolderNames = ArrayList<String>()
-            val originNames = ArrayList<String>()
+            val bookFolderNames = hashSetOf<String>()
+            val originNames = hashSetOf<String>()
             appDb.bookDao.all.forEach {
                 bookFolderNames.add(it.getFolderName())
                 if (it.isEpub) originNames.add(it.originName)
@@ -80,6 +112,10 @@ object BookHelp {
                     }
                 }
             FileUtils.delete(ArchiveUtils.TEMP_PATH)
+            val filesDir = appCtx.filesDir
+            FileUtils.delete("$filesDir/shareBookSource.json")
+            FileUtils.delete("$filesDir/shareRssSource.json")
+            FileUtils.delete("$filesDir/books.json")
         }
     }
 
@@ -91,7 +127,7 @@ object BookHelp {
     ) {
         try {
             saveText(book, bookChapter, content)
-            saveImages(bookSource, book, bookChapter, content)
+            //saveImages(bookSource, book, bookChapter, content)
             postEvent(EventBus.SAVE_CONTENT, Pair(book, bookChapter))
         } catch (e: Exception) {
             e.printStackTrace()
@@ -112,60 +148,69 @@ object BookHelp {
             book.getFolderName(),
             bookChapter.getFileName(),
         ).writeText(content)
+        if (book.isOnLineTxt && AppConfig.tocCountWords) {
+            bookChapter.wordCount = StringUtils.wordCountFormat(content.length)
+            appDb.bookChapterDao.update(bookChapter)
+        }
     }
 
     suspend fun saveImages(
         bookSource: BookSource,
         book: Book,
         bookChapter: BookChapter,
-        content: String
+        content: String,
+        concurrency: Int = AppConfig.threadCount
     ) = coroutineScope {
-        val awaitList = arrayListOf<Deferred<Unit>>()
-        val matcher = AppPattern.imgPattern.matcher(content)
-        while (matcher.find()) {
-            matcher.group(1)?.let { src ->
+        flow {
+            val matcher = AppPattern.imgPattern.matcher(content)
+            while (matcher.find()) {
+                val src = matcher.group(1) ?: continue
                 val mSrc = NetworkUtils.getAbsoluteURL(bookChapter.url, src)
-                awaitList.add(async {
-                    saveImage(bookSource, book, mSrc)
-                })
+                emit(mSrc)
             }
-        }
-        awaitList.forEach {
-            it.await()
-        }
+        }.onEachParallel(concurrency) { mSrc ->
+            saveImage(bookSource, book, mSrc, bookChapter)
+        }.collect()
     }
 
-    suspend fun saveImage(bookSource: BookSource?, book: Book, src: String) {
-        while (downloadImages.contains(src)) {
-            delay(100)
-        }
-        if (getImage(book, src).exists()) {
+    suspend fun saveImage(
+        bookSource: BookSource?,
+        book: Book,
+        src: String,
+        chapter: BookChapter? = null
+    ) {
+        if (isImageExist(book, src)) {
             return
         }
-        downloadImages.add(src)
-        val analyzeUrl = AnalyzeUrl(src, source = bookSource)
+        val mutex = synchronized(this) {
+            downloadImages.getOrPut(src) { Mutex() }
+        }
+        mutex.lock()
         try {
+            if (isImageExist(book, src)) {
+                return
+            }
+            val analyzeUrl = AnalyzeUrl(src, source = bookSource)
             val bytes = analyzeUrl.getByteArrayAwait()
             //某些图片被加密，需要进一步解密
             ImageUtils.decode(
                 src, bytes, isCover = false, bookSource, book
             )?.let {
-                if (!checkImage(bytes)) {
-                    AppLog.put("图片 $src 下载错误，数据异常")
+                if (!checkImage(it)) {
+                    // 如果部分图片失效，每次进入正文都会花很长时间再次获取图片数据
+                    // 所以无论如何都要将数据写入到文件里
+                    // throw NoStackTraceException("数据异常")
+                    AppLog.put("${book.name} ${chapter?.title} 图片 $src 下载错误 数据异常")
                 }
-                FileUtils.createFileIfNotExist(
-                    downloadDir,
-                    cacheFolderName,
-                    book.getFolderName(),
-                    cacheImageFolderName,
-                    "${MD5Utils.md5Encode16(src)}.${getImageSuffix(src)}"
-                ).writeBytes(it)
+                writeImage(book, src, it)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
-            AppLog.put("图片 $src 下载错误\n${e.localizedMessage}", e)
+            coroutineContext.ensureActive()
+            val msg = "${book.name} ${chapter?.title} 图片 $src 下载失败\n${e.localizedMessage}"
+            AppLog.put(msg, e)
         } finally {
             downloadImages.remove(src)
+            mutex.unlock()
         }
     }
 
@@ -176,6 +221,16 @@ object BookHelp {
             cacheImageFolderName,
             "${MD5Utils.md5Encode16(src)}.${getImageSuffix(src)}"
         )
+    }
+
+    @Synchronized
+    fun writeImage(book: Book, src: String, bytes: ByteArray) {
+        getImage(book, src).createFileIfNotExist().writeBytes(bytes)
+    }
+
+    @Synchronized
+    fun isImageExist(book: Book, src: String): Boolean {
+        return getImage(book, src).exists()
     }
 
     fun getImageSuffix(src: String): String {
@@ -237,7 +292,9 @@ object BookHelp {
      * 检测该章节是否下载
      */
     fun hasContent(book: Book, bookChapter: BookChapter): Boolean {
-        return if (book.isLocalTxt) {
+        return if (book.isLocalTxt
+            || (bookChapter.isVolume && bookChapter.url.startsWith(bookChapter.title))
+        ) {
             true
         } else {
             downloadDir.exists(
@@ -267,11 +324,11 @@ object BookHelp {
                     ret = false
                     continue
                 }
-                if (SvgUtils.getSize(image.absolutePath) != null) {
-                    continue
-                }
                 BitmapFactory.decodeFile(image.absolutePath, op)
                 if (op.outWidth < 1 && op.outHeight < 1) {
+                    if (SvgUtils.getSize(image.absolutePath) != null) {
+                        continue
+                    }
                     ret = false
                     image.delete()
                 }
@@ -281,14 +338,11 @@ object BookHelp {
     }
 
     private fun checkImage(bytes: ByteArray): Boolean {
-        if (SvgUtils.getSize(ByteArrayInputStream(bytes)) != null) {
-            return true
-        }
         val op = BitmapFactory.Options()
         op.inJustDecodeBounds = true
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, op)
         if (op.outWidth < 1 && op.outHeight < 1) {
-            return false
+            return SvgUtils.getSize(ByteArrayInputStream(bytes)) != null
         }
         return true
     }
@@ -331,21 +385,25 @@ object BookHelp {
      * 设置是否禁用正文的去除重复标题,针对单个章节
      */
     fun setRemoveSameTitle(book: Book, bookChapter: BookChapter, removeSameTitle: Boolean) {
+        val fileName = bookChapter.getFileName("nr")
+        val contentProcessor = ContentProcessor.get(book)
         if (removeSameTitle) {
             val path = FileUtils.getPath(
                 downloadDir,
                 cacheFolderName,
                 book.getFolderName(),
-                bookChapter.getFileName(".nr")
+                fileName
             )
+            contentProcessor.removeSameTitleCache.remove(fileName)
             File(path).delete()
         } else {
             FileUtils.createFileIfNotExist(
                 downloadDir,
                 cacheFolderName,
                 book.getFolderName(),
-                bookChapter.getFileName(".nr")
+                fileName
             )
+            contentProcessor.removeSameTitleCache.add(fileName)
         }
     }
 
@@ -357,7 +415,7 @@ object BookHelp {
             downloadDir,
             cacheFolderName,
             book.getFolderName(),
-            bookChapter.getFileName(".nr")
+            bookChapter.getFileName("nr")
         )
         return !File(path).exists()
     }
@@ -393,7 +451,7 @@ object BookHelp {
         newChapterList: List<BookChapter>,
         oldChapterListSize: Int = 0
     ): Int {
-        if (oldDurChapterIndex == 0) return 0
+        if (oldDurChapterIndex <= 0) return 0
         if (newChapterList.isEmpty()) return oldDurChapterIndex
         val oldChapterNum = getChapterNum(oldDurChapterName)
         val oldName = getPureChapterName(oldDurChapterName)
@@ -436,6 +494,15 @@ object BookHelp {
         }
     }
 
+    fun getDurChapter(
+        oldBook: Book,
+        newChapterList: List<BookChapter>
+    ): Int {
+        return oldBook.run {
+            getDurChapter(durChapterIndex, durChapterTitle, newChapterList, totalChapterNum)
+        }
+    }
+
     private val chapterNamePattern1 by lazy {
         Pattern.compile(".*?第([\\d零〇一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟]+)[章节篇回集话]")
     }
@@ -461,7 +528,6 @@ object BookHelp {
         )
     }
 
-    @Suppress("SpellCheckingInspection")
     private val regexOther by lazy {
         // 所有非字母数字中日韩文字 CJK区+扩展A-F区
         @Suppress("RegExpDuplicateCharacterInClass")

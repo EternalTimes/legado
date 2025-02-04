@@ -1,21 +1,24 @@
 package io.legado.app
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.os.Build
-import com.github.liuyueyi.quick.transfer.ChineseUtils
 import com.github.liuyueyi.quick.transfer.constants.TransType
 import com.jeremyliao.liveeventbus.LiveEventBus
+import com.jeremyliao.liveeventbus.logger.DefaultLogger
 import io.legado.app.base.AppContextWrapper
 import io.legado.app.constant.AppConst.channelIdDownload
 import io.legado.app.constant.AppConst.channelIdReadAloud
 import io.legado.app.constant.AppConst.channelIdWeb
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
+import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.CrashHandler
 import io.legado.app.help.DefaultData
@@ -28,14 +31,21 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.http.Cronet
 import io.legado.app.help.http.ObsoleteUrlFactory
 import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.source.SourceHelp
+import io.legado.app.help.storage.Backup
 import io.legado.app.model.BookCover
+import io.legado.app.utils.ChineseUtils
+import io.legado.app.utils.LogUtils
 import io.legado.app.utils.defaultSharedPreferences
 import io.legado.app.utils.getPrefBoolean
+import io.legado.app.utils.isDebuggable
 import kotlinx.coroutines.launch
+import org.chromium.base.ThreadUtils
 import splitties.init.appCtx
 import splitties.systemservices.notificationManager
 import java.net.URL
 import java.util.concurrent.TimeUnit
+import java.util.logging.Level
 
 class App : Application() {
 
@@ -43,18 +53,26 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        oldConfig = Configuration(resources.configuration)
         CrashHandler(this)
+        LogUtils.d("App", "onCreate")
+        LogUtils.logDeviceInfo()
+        if (isDebuggable) {
+            ThreadUtils.setThreadAssertsDisabledForTesting(true)
+        }
+        oldConfig = Configuration(resources.configuration)
         //预下载Cronet so
         Cronet.preDownload()
         createNotificationChannels()
-        applyDayNight(this)
         LiveEventBus.config()
             .lifecycleObserverAlwaysActive(true)
             .autoClear(false)
+            .enableLogger(BuildConfig.DEBUG || AppConfig.recordLog)
+            .setLogger(EventLogger())
+        applyDayNight(this)
         registerActivityLifecycleCallbacks(LifecycleHelp)
         defaultSharedPreferences.registerOnSharedPreferenceChangeListener(AppConfig)
         DefaultData.upVersion()
+        AppFreezeMonitor.init(this)
         Coroutine.async {
             URL.setURLStreamHandlerFactory(ObsoleteUrlFactory(okHttpClient))
             launch { installGmsTlsProvider(appCtx) }
@@ -68,11 +86,17 @@ class App : Application() {
             }
             RuleBigDataHelp.clearInvalid()
             BookHelp.clearInvalidCache()
+            Backup.clearCache()
             //初始化简繁转换引擎
             when (AppConfig.chineseConverterType) {
-                1 -> ChineseUtils.preLoad(true, TransType.TRADITIONAL_TO_SIMPLE)
+                1 -> launch {
+                    ChineseUtils.fixT2sDict()
+                }
+
                 2 -> ChineseUtils.preLoad(true, TransType.SIMPLE_TO_TRADITIONAL)
             }
+            //调整排序序号
+            SourceHelp.adjustSortNumber()
             //同步阅读记录
             if (AppConfig.syncBookProgress) {
                 AppWebDav.downloadAllBookProgress()
@@ -105,8 +129,13 @@ class App : Application() {
      */
     private fun installGmsTlsProvider(context: Context) {
         try {
+            val gmsPackageName = "com.google.android.gms"
+            val appInfo = packageManager.getApplicationInfo(gmsPackageName, 0)
+            if ((appInfo.flags and ApplicationInfo.FLAG_SYSTEM) == 0) {
+                return
+            }
             val gms = context.createPackageContext(
-                "com.google.android.gms",
+                gmsPackageName,
                 CONTEXT_INCLUDE_CODE or CONTEXT_IGNORE_SECURITY
             )
             gms.classLoader
@@ -131,6 +160,7 @@ class App : Application() {
             enableLights(false)
             enableVibration(false)
             setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         val readAloudChannel = NotificationChannel(
@@ -141,6 +171,7 @@ class App : Application() {
             enableLights(false)
             enableVibration(false)
             setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         val webChannel = NotificationChannel(
@@ -151,6 +182,7 @@ class App : Application() {
             enableLights(false)
             enableVibration(false)
             setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         //向notification manager 提交channel
@@ -161,6 +193,23 @@ class App : Application() {
                 webChannel
             )
         )
+    }
+
+    class EventLogger : DefaultLogger() {
+
+        override fun log(level: Level, msg: String) {
+            super.log(level, msg)
+            LogUtils.d(TAG, msg)
+        }
+
+        override fun log(level: Level, msg: String, th: Throwable?) {
+            super.log(level, msg, th)
+            LogUtils.d(TAG, "$msg\n${th?.stackTraceToString()}")
+        }
+
+        companion object {
+            private const val TAG = "[LiveEventBus]"
+        }
     }
 
 }

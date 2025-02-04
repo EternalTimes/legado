@@ -1,27 +1,70 @@
 package io.legado.app.data
 
 import android.content.ContentValues
-import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
-import io.legado.app.constant.AppConst
-import io.legado.app.data.dao.*
-import io.legado.app.data.entities.*
+import io.legado.app.data.dao.BookChapterDao
+import io.legado.app.data.dao.BookDao
+import io.legado.app.data.dao.BookGroupDao
+import io.legado.app.data.dao.BookSourceDao
+import io.legado.app.data.dao.BookmarkDao
+import io.legado.app.data.dao.CacheDao
+import io.legado.app.data.dao.CookieDao
+import io.legado.app.data.dao.DictRuleDao
+import io.legado.app.data.dao.HttpTTSDao
+import io.legado.app.data.dao.KeyboardAssistsDao
+import io.legado.app.data.dao.ReadRecordDao
+import io.legado.app.data.dao.ReplaceRuleDao
+import io.legado.app.data.dao.RssArticleDao
+import io.legado.app.data.dao.RssReadRecordDao
+import io.legado.app.data.dao.RssSourceDao
+import io.legado.app.data.dao.RssStarDao
+import io.legado.app.data.dao.RuleSubDao
+import io.legado.app.data.dao.SearchBookDao
+import io.legado.app.data.dao.SearchKeywordDao
+import io.legado.app.data.dao.ServerDao
+import io.legado.app.data.dao.TxtTocRuleDao
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookGroup
+import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.Bookmark
+import io.legado.app.data.entities.Cache
+import io.legado.app.data.entities.Cookie
+import io.legado.app.data.entities.DictRule
+import io.legado.app.data.entities.HttpTTS
+import io.legado.app.data.entities.KeyboardAssist
+import io.legado.app.data.entities.ReadRecord
+import io.legado.app.data.entities.ReplaceRule
+import io.legado.app.data.entities.RssArticle
+import io.legado.app.data.entities.RssReadRecord
+import io.legado.app.data.entities.RssSource
+import io.legado.app.data.entities.RssStar
+import io.legado.app.data.entities.RuleSub
+import io.legado.app.data.entities.SearchBook
+import io.legado.app.data.entities.SearchKeyword
+import io.legado.app.data.entities.Server
+import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.DefaultData
 import org.intellij.lang.annotations.Language
 import splitties.init.appCtx
-import java.util.*
+import java.util.Locale
 
 val appDb by lazy {
-    AppDatabase.createDatabase(appCtx)
+    Room.databaseBuilder(appCtx, AppDatabase::class.java, AppDatabase.DATABASE_NAME)
+        .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        .addMigrations(*DatabaseMigrations.migrations)
+        .allowMainThreadQueries()
+        .addCallback(AppDatabase.dbCallback)
+        .build()
 }
 
 @Database(
-    version = 69,
+    version = 74,
     exportSchema = true,
     entities = [Book::class, BookGroup::class, BookSource::class, BookChapter::class,
         ReplaceRule::class, SearchBook::class, SearchKeyword::class, Cookie::class,
@@ -54,7 +97,12 @@ val appDb by lazy {
         AutoMigration(from = 65, to = 66),
         AutoMigration(from = 66, to = 67),
         AutoMigration(from = 67, to = 68),
-        AutoMigration(from = 68, to = 69)
+        AutoMigration(from = 68, to = 69),
+        AutoMigration(from = 69, to = 70),
+        AutoMigration(from = 70, to = 71),
+        AutoMigration(from = 71, to = 72),
+        AutoMigration(from = 72, to = 73),
+        AutoMigration(from = 73, to = 74),
     ]
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -70,6 +118,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract val bookmarkDao: BookmarkDao
     abstract val rssArticleDao: RssArticleDao
     abstract val rssStarDao: RssStarDao
+    abstract val rssReadRecordDao: RssReadRecordDao
     abstract val cookieDao: CookieDao
     abstract val txtTocRuleDao: TxtTocRuleDao
     abstract val readRecordDao: ReadRecordDao
@@ -82,17 +131,13 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
 
-        private const val DATABASE_NAME = "legado.db"
+        const val DATABASE_NAME = "legado.db"
 
-        fun createDatabase(context: Context) = Room
-            .databaseBuilder(context, AppDatabase::class.java, DATABASE_NAME)
-            .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5, 6, 7, 8, 9)
-            .addMigrations(*DatabaseMigrations.migrations)
-            .allowMainThreadQueries()
-            .addCallback(dbCallback)
-            .build()
+        const val BOOK_TABLE_NAME = "books"
+        const val BOOK_SOURCE_TABLE_NAME = "book_sources"
+        const val RSS_SOURCE_TABLE_NAME = "rssSources"
 
-        private val dbCallback = object : Callback() {
+        val dbCallback = object : Callback() {
 
             override fun onCreate(db: SupportSQLiteDatabase) {
                 db.setLocale(Locale.CHINESE)
@@ -102,43 +147,43 @@ abstract class AppDatabase : RoomDatabase() {
                 @Language("sql")
                 val insertBookGroupAllSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${AppConst.bookGroupAllId}, '全部', -10, 1
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupAllId})
+                    select ${BookGroup.IdAll}, '全部', -10, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdAll})
                 """.trimIndent()
                 db.execSQL(insertBookGroupAllSql)
                 @Language("sql")
                 val insertBookGroupLocalSql = """
                     insert into book_groups(groupId, groupName, 'order', enableRefresh, show) 
-                    select ${AppConst.bookGroupLocalId}, '本地', -9, 0, 1
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupLocalId})
+                    select ${BookGroup.IdLocal}, '本地', -9, 0, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdLocal})
                 """.trimIndent()
                 db.execSQL(insertBookGroupLocalSql)
                 @Language("sql")
                 val insertBookGroupMusicSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${AppConst.bookGroupAudioId}, '音频', -8, 1
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupAudioId})
+                    select ${BookGroup.IdAudio}, '音频', -8, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdAudio})
                 """.trimIndent()
                 db.execSQL(insertBookGroupMusicSql)
                 @Language("sql")
                 val insertBookGroupNetNoneGroupSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${AppConst.bookGroupNetNoneId}, '网络未分组', -7, 1
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupNetNoneId})
+                    select ${BookGroup.IdNetNone}, '网络未分组', -7, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdNetNone})
                 """.trimIndent()
                 db.execSQL(insertBookGroupNetNoneGroupSql)
                 @Language("sql")
                 val insertBookGroupLocalNoneGroupSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${AppConst.bookGroupLocalNoneId}, '本地未分组', -6, 0
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupLocalNoneId})
+                    select ${BookGroup.IdLocalNone}, '本地未分组', -6, 0
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdLocalNone})
                 """.trimIndent()
                 db.execSQL(insertBookGroupLocalNoneGroupSql)
                 @Language("sql")
                 val insertBookGroupErrorSql = """
                     insert into book_groups(groupId, groupName, 'order', show) 
-                    select ${AppConst.bookGroupErrorId}, '更新失败', -1, 1
-                    where not exists (select * from book_groups where groupId = ${AppConst.bookGroupErrorId})
+                    select ${BookGroup.IdError}, '更新失败', -1, 1
+                    where not exists (select * from book_groups where groupId = ${BookGroup.IdError})
                 """.trimIndent()
                 db.execSQL(insertBookGroupErrorSql)
                 @Language("sql")

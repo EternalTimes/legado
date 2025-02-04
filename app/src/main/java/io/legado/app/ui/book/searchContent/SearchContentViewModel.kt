@@ -2,7 +2,6 @@ package io.legado.app.ui.book.searchContent
 
 
 import android.app.Application
-import com.github.liuyueyi.quick.transfer.ChineseUtils
 import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
@@ -10,9 +9,8 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.config.AppConfig
-import kotlinx.coroutines.Dispatchers
+import io.legado.app.utils.ChineseUtils
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 class SearchContentViewModel(application: Application) : BaseViewModel(application) {
@@ -23,6 +21,7 @@ class SearchContentViewModel(application: Application) : BaseViewModel(applicati
     var searchResultCounts = 0
     val cacheChapterNames = hashSetOf<String>()
     val searchResultList: MutableList<SearchResult> = mutableListOf()
+    var replaceEnabled = false
 
     fun initBook(bookUrl: String, success: () -> Unit) {
         this.bookUrl = bookUrl
@@ -38,10 +37,9 @@ class SearchContentViewModel(application: Application) : BaseViewModel(applicati
 
     suspend fun searchChapter(
         query: String,
-        chapter: BookChapter?
+        chapter: BookChapter
     ): List<SearchResult> {
         val searchResultsWithinChapter: MutableList<SearchResult> = mutableListOf()
-        chapter ?: return searchResultsWithinChapter
         val book = book ?: return searchResultsWithinChapter
         val chapterContent = BookHelp.getContent(book, chapter) ?: return searchResultsWithinChapter
         coroutineContext.ensureActive()
@@ -52,7 +50,7 @@ class SearchContentViewModel(application: Application) : BaseViewModel(applicati
         }
         coroutineContext.ensureActive()
         val mContent = contentProcessor!!.getContent(
-            book, chapter, chapterContent
+            book, chapter, chapterContent, useReplace = replaceEnabled
         ).toString()
         val positions = searchPosition(mContent, query)
         positions.forEachIndexed { index, position ->

@@ -9,7 +9,6 @@ import androidx.lifecycle.LiveData
 import io.legado.app.R
 import io.legado.app.base.VMBaseFragment
 import io.legado.app.constant.EventBus
-import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
@@ -26,10 +25,23 @@ import io.legado.app.ui.book.import.remote.RemoteBookActivity
 import io.legado.app.ui.book.manage.BookshelfManageActivity
 import io.legado.app.ui.book.search.SearchActivity
 import io.legado.app.ui.file.HandleFileContract
+import io.legado.app.ui.main.MainFragmentInterface
 import io.legado.app.ui.main.MainViewModel
-import io.legado.app.utils.*
+import io.legado.app.ui.widget.dialog.WaitDialog
+import io.legado.app.utils.checkByIndex
+import io.legado.app.utils.getCheckedIndex
+import io.legado.app.utils.isAbsUrl
+import io.legado.app.utils.postEvent
+import io.legado.app.utils.readText
+import io.legado.app.utils.sendToClip
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.startActivity
+import io.legado.app.utils.toastOnUi
 
-abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfViewModel>(layoutId) {
+abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfViewModel>(layoutId),
+    MainFragmentInterface {
+
+    override val position: Int? get() = arguments?.getInt("position")
 
     val activityViewModel by activityViewModels<MainViewModel>()
     override val viewModel by viewModels<BookshelfViewModel>()
@@ -63,6 +75,13 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
     abstract val groupId: Long
     abstract val books: List<Book>
     private var groupsLiveData: LiveData<List<BookGroup>>? = null
+    private val waitDialog by lazy {
+        WaitDialog(requireContext()).apply {
+            setOnCancelListener {
+                viewModel.addBookJob?.cancel()
+            }
+        }
+    }
 
     abstract fun gotoTop()
 
@@ -79,19 +98,23 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
             R.id.menu_bookshelf_layout -> configBookshelf()
             R.id.menu_group_manage -> showDialogFragment<GroupManageDialog>()
             R.id.menu_add_local -> startActivity<ImportBookActivity>()
-            R.id.menu_add_url -> addBookByUrl()
+            R.id.menu_add_url -> showAddBookByUrlAlert()
             R.id.menu_bookshelf_manage -> startActivity<BookshelfManageActivity> {
                 putExtra("groupId", groupId)
             }
+
             R.id.menu_download -> startActivity<CacheActivity> {
                 putExtra("groupId", groupId)
             }
+
             R.id.menu_export_bookshelf -> viewModel.exportBookshelf(books) { file ->
                 exportResult.launch {
                     mode = HandleFileContract.EXPORT
-                    fileData = HandleFileContract.FileData("bookshelf.json", file, "application/json")
+                    fileData =
+                        HandleFileContract.FileData("bookshelf.json", file, "application/json")
                 }
             }
+
             R.id.menu_import_bookshelf -> importBookshelfAlert(groupId)
             R.id.menu_log -> showDialogFragment<AppLogDialog>()
         }
@@ -108,8 +131,20 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
 
     abstract fun upGroup(data: List<BookGroup>)
 
+    abstract fun upSort()
+
+    override fun observeLiveBus() {
+        viewModel.addBookProgressLiveData.observe(this) { count ->
+            if (count < 0) {
+                waitDialog.dismiss()
+            } else {
+                waitDialog.setText("添加中... ($count)")
+            }
+        }
+    }
+
     @SuppressLint("InflateParams")
-    fun addBookByUrl() {
+    fun showAddBookByUrlAlert() {
         alert(titleResource = R.string.add_book_url) {
             val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                 editView.hint = "url"
@@ -117,6 +152,8 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
             customView { alertBinding.root }
             okButton {
                 alertBinding.editView.text?.toString()?.let {
+                    waitDialog.setText("添加中...")
+                    waitDialog.show()
                     viewModel.addBookByUrl(it)
                 }
             }
@@ -127,7 +164,7 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
     @SuppressLint("InflateParams")
     fun configBookshelf() {
         alert(titleResource = R.string.bookshelf_layout) {
-            val bookshelfLayout = getPrefInt(PreferKey.bookshelfLayout)
+            val bookshelfLayout = AppConfig.bookshelfLayout
             val bookshelfSort = AppConfig.bookshelfSort
             val alertBinding =
                 DialogBookshelfConfigBinding.inflate(layoutInflater)
@@ -135,6 +172,8 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
                         spGroupStyle.setSelection(AppConfig.bookGroupStyle)
                         swShowUnread.isChecked = AppConfig.showUnread
                         swShowLastUpdateTime.isChecked = AppConfig.showLastUpdateTime
+                        swShowWaitUpBooks.isChecked = AppConfig.showWaitUpCount
+                        swShowBookshelfFastScroller.isChecked = AppConfig.showBookshelfFastScroller
                         rgLayout.checkByIndex(bookshelfLayout)
                         rgSort.checkByIndex(bookshelfSort)
                     }
@@ -153,16 +192,25 @@ abstract class BaseBookshelfFragment(layoutId: Int) : VMBaseFragment<BookshelfVi
                         AppConfig.showLastUpdateTime = swShowLastUpdateTime.isChecked
                         postEvent(EventBus.BOOKSHELF_REFRESH, "")
                     }
-                    var changed = false
-                    if (bookshelfLayout != rgLayout.getCheckedIndex()) {
-                        putPrefInt(PreferKey.bookshelfLayout, rgLayout.getCheckedIndex())
-                        changed = true
+                    if (AppConfig.showWaitUpCount != swShowWaitUpBooks.isChecked) {
+                        AppConfig.showWaitUpCount = swShowWaitUpBooks.isChecked
+                        activityViewModel.postUpBooksLiveData(true)
+                    }
+                    if (AppConfig.showBookshelfFastScroller != swShowBookshelfFastScroller.isChecked) {
+                        AppConfig.showBookshelfFastScroller = swShowBookshelfFastScroller.isChecked
+                        postEvent(EventBus.BOOKSHELF_REFRESH, "")
                     }
                     if (bookshelfSort != rgSort.getCheckedIndex()) {
                         AppConfig.bookshelfSort = rgSort.getCheckedIndex()
-                        changed = true
+                        upSort()
                     }
-                    if (changed) {
+                    if (bookshelfLayout != rgLayout.getCheckedIndex()) {
+                        AppConfig.bookshelfLayout = rgLayout.getCheckedIndex()
+                        if (AppConfig.bookshelfLayout == 0) {
+                            activityViewModel.booksGridRecycledViewPool.clear()
+                        } else {
+                            activityViewModel.booksListRecycledViewPool.clear()
+                        }
                         postEvent(EventBus.RECREATE, "")
                     }
                 }

@@ -4,6 +4,7 @@ import androidx.lifecycle.MutableLiveData
 import io.legado.app.R
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.splitNotBlank
 import splitties.init.appCtx
@@ -20,15 +21,19 @@ data class SearchScope(private var scope: String) {
         "${source.bookSourceName.replace(":", "")}::${source.bookSourceUrl}"
     )
 
+    constructor(source: BookSourcePart) : this(
+        "${source.bookSourceName.replace(":", "")}::${source.bookSourceUrl}"
+    )
+
     override fun toString(): String {
         return scope
     }
 
     val stateLiveData = MutableLiveData(scope)
 
-    fun update(scope: String) {
+    fun update(scope: String, postValue: Boolean = true) {
         this.scope = scope
-        stateLiveData.postValue(scope)
+        if (postValue) stateLiveData.postValue(scope)
         save()
     }
 
@@ -96,21 +101,21 @@ data class SearchScope(private var scope: String) {
     /**
      * 搜索范围书源
      */
-    fun getBookSources(): List<BookSource> {
-        val list = hashSetOf<BookSource>()
+    fun getBookSourceParts(): List<BookSourcePart> {
+        val list = hashSetOf<BookSourcePart>()
         if (scope.isEmpty()) {
-            list.addAll(appDb.bookSourceDao.allEnabled)
+            list.addAll(appDb.bookSourceDao.allEnabledPart)
         } else {
             if (scope.contains("::")) {
                 scope.substringAfter("::").let {
-                    appDb.bookSourceDao.getBookSource(it)?.let { source ->
+                    appDb.bookSourceDao.getBookSourcePart(it)?.let { source ->
                         list.add(source)
                     }
                 }
             } else {
                 val oldScope = scope.splitNotBlank(",")
                 val newScope = oldScope.filter {
-                    val bookSources = appDb.bookSourceDao.getEnabledByGroup(it)
+                    val bookSources = appDb.bookSourceDao.getEnabledPartByGroup(it)
                     list.addAll(bookSources)
                     bookSources.isNotEmpty()
                 }
@@ -121,7 +126,7 @@ data class SearchScope(private var scope: String) {
             }
             if (list.isEmpty()) {
                 scope = ""
-                appDb.bookSourceDao.allEnabled.let {
+                appDb.bookSourceDao.allEnabledPart.let {
                     if (it.isNotEmpty()) {
                         stateLiveData.postValue(scope)
                         list.addAll(it)
@@ -138,6 +143,11 @@ data class SearchScope(private var scope: String) {
 
     fun save() {
         AppConfig.searchScope = scope
+        if (isAll() || isSource() || scope.contains(",")) {
+            AppConfig.searchGroup = ""
+        } else {
+            AppConfig.searchGroup = scope
+        }
     }
 
 }

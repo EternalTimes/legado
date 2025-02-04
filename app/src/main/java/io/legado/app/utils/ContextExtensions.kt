@@ -1,13 +1,23 @@
-@file:Suppress("unused")
+@file:Suppress("unused", "UnusedReceiverParameter")
 
 package io.legado.app.utils
 
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.PendingIntent
-import android.app.PendingIntent.*
+import android.app.PendingIntent.FLAG_MUTABLE
+import android.app.PendingIntent.FLAG_UPDATE_CURRENT
+import android.app.PendingIntent.getActivity
+import android.app.PendingIntent.getBroadcast
+import android.app.PendingIntent.getService
 import android.app.Service
-import android.content.*
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -31,6 +41,7 @@ import io.legado.app.constant.AppConst
 import io.legado.app.help.IntentHelp
 import splitties.systemservices.clipboardManager
 import splitties.systemservices.connectivityManager
+import splitties.systemservices.uiModeManager
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.system.exitProcess
@@ -53,6 +64,7 @@ inline fun <reified T : Service> Context.stopService() {
 @SuppressLint("UnspecifiedImmutableFlag")
 inline fun <reified T : Service> Context.servicePendingIntent(
     action: String,
+    requestCode: Int = 0,
     configIntent: Intent.() -> Unit = {}
 ): PendingIntent? {
     val intent = Intent(this, T::class.java)
@@ -63,7 +75,7 @@ inline fun <reified T : Service> Context.servicePendingIntent(
     } else {
         FLAG_UPDATE_CURRENT
     }
-    return getService(this, 0, intent, flags)
+    return getService(this, requestCode, intent, flags)
 }
 
 @SuppressLint("UnspecifiedImmutableFlag")
@@ -112,6 +124,14 @@ inline fun <reified T : BroadcastReceiver> Context.broadcastPendingIntent(
     return getBroadcast(this, 0, intent, flags)
 }
 
+fun Context.startForegroundServiceCompat(intent: Intent) {
+    try {
+        startService(intent)
+    } catch (e: IllegalStateException) {
+        ContextCompat.startForegroundService(this, intent)
+    }
+}
+
 val Context.defaultSharedPreferences: SharedPreferences
     get() = PreferenceManager.getDefaultSharedPreferences(this)
 
@@ -157,6 +177,9 @@ fun Context.getCompatDrawable(@DrawableRes id: Int): Drawable? = ContextCompat.g
 
 fun Context.getCompatColorStateList(@ColorRes id: Int): ColorStateList? =
     ContextCompat.getColorStateList(this, id)
+
+fun Context.checkSelfUriPermission(uri: Uri, modeFlags: Int): Int =
+    checkUriPermission(uri, Process.myPid(), Process.myUid(), modeFlags)
 
 fun Context.restart() {
     val intent: Intent? = packageManager.getLaunchIntentForPackage(packageName)
@@ -317,6 +340,7 @@ fun Context.openUrl(uri: Uri) {
     }
 }
 
+@SuppressLint("ObsoleteSdkInt")
 fun Context.openFileUri(uri: Uri, type: String? = null) {
     val intent = Intent()
     intent.action = Intent.ACTION_VIEW
@@ -347,7 +371,9 @@ val Context.isPad: Boolean
         return (resources.configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK) >= Configuration.SCREENLAYOUT_SIZE_LARGE
     }
 
-@Suppress("DEPRECATION")
+val Context.isTv: Boolean
+    get() = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+
 val Context.channel: String
     get() {
         try {
@@ -359,3 +385,6 @@ val Context.channel: String
         }
         return ""
     }
+
+val Context.isDebuggable: Boolean
+    get() = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0

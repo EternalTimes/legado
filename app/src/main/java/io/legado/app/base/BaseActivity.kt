@@ -9,8 +9,10 @@ import android.os.Bundle
 import android.util.AttributeSet
 import android.view.Menu
 import android.view.MenuItem
+import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
+import androidx.activity.addCallback
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.viewbinding.ViewBinding
@@ -24,10 +26,18 @@ import io.legado.app.lib.theme.ThemeStore
 import io.legado.app.lib.theme.backgroundColor
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.widget.TitleBar
-import io.legado.app.utils.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.cancel
+import io.legado.app.utils.ColorUtils
+import io.legado.app.utils.applyBackgroundTint
+import io.legado.app.utils.applyOpenTint
+import io.legado.app.utils.applyTint
+import io.legado.app.utils.disableAutoFill
+import io.legado.app.utils.fullScreen
+import io.legado.app.utils.hideSoftInput
+import io.legado.app.utils.setLightStatusBar
+import io.legado.app.utils.setNavigationBarColorAuto
+import io.legado.app.utils.setStatusBarColorAuto
+import io.legado.app.utils.toastOnUi
+import io.legado.app.utils.windowSize
 
 
 abstract class BaseActivity<VB : ViewBinding>(
@@ -36,11 +46,12 @@ abstract class BaseActivity<VB : ViewBinding>(
     private val toolBarTheme: Theme = Theme.Auto,
     private val transparent: Boolean = false,
     private val imageBg: Boolean = true
-) : AppCompatActivity(), CoroutineScope by MainScope() {
+) : AppCompatActivity() {
 
     protected abstract val binding: VB
 
     val isInMultiWindow: Boolean
+        @SuppressLint("ObsoleteSdkInt")
         get() {
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 isInMultiWindowMode
@@ -77,6 +88,9 @@ abstract class BaseActivity<VB : ViewBinding>(
             findViewById<TitleBar>(R.id.title_bar)
                 ?.onMultiWindowModeChanged(isInMultiWindowMode, fullScreen)
         }
+        onBackPressedDispatcher.addCallback(this) {
+            finish()
+        }
         observeLiveBus()
         onActivityCreated(savedInstanceState)
     }
@@ -94,11 +108,6 @@ abstract class BaseActivity<VB : ViewBinding>(
         findViewById<TitleBar>(R.id.title_bar)
             ?.onMultiWindowModeChanged(isInMultiWindow, fullScreen)
         setupSystemBar()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        cancel()
     }
 
     abstract fun onActivityCreated(savedInstanceState: Bundle?)
@@ -133,10 +142,12 @@ abstract class BaseActivity<VB : ViewBinding>(
                 setTheme(R.style.AppTheme_Dark)
                 window.decorView.applyBackgroundTint(backgroundColor)
             }
+
             Theme.Light -> {
                 setTheme(R.style.AppTheme_Light)
                 window.decorView.applyBackgroundTint(backgroundColor)
             }
+
             else -> {
                 if (ColorUtils.isColorLight(primaryColor)) {
                     setTheme(R.style.AppTheme_Light)
@@ -187,6 +198,15 @@ abstract class BaseActivity<VB : ViewBinding>(
     }
 
     open fun observeLiveBus() {
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        return try {
+            super.dispatchTouchEvent(ev)
+        } catch (e: IllegalArgumentException) {
+            e.printStackTrace()
+            false
+        }
     }
 
     override fun finish() {

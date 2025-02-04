@@ -4,12 +4,22 @@ import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
-import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.webkit.*
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
+import android.webkit.URLUtil
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.addCallback
 import androidx.activity.viewModels
 import androidx.core.view.size
 import io.legado.app.R
@@ -24,9 +34,20 @@ import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.Download
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.file.HandleFileContract
-import io.legado.app.utils.*
+import io.legado.app.utils.ACache
+import io.legado.app.utils.gone
+import io.legado.app.utils.invisible
+import io.legado.app.utils.keepScreenOn
+import io.legado.app.utils.longSnackbar
+import io.legado.app.utils.openUrl
+import io.legado.app.utils.sendToClip
+import io.legado.app.utils.setDarkeningAllowed
+import io.legado.app.utils.startActivity
+import io.legado.app.utils.toggleNavigationBar
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import io.legado.app.utils.visible
 import java.net.URLDecoder
+import io.legado.app.help.http.CookieManager as AppCookieManager
 
 class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
 
@@ -36,6 +57,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
     private var customWebViewCallback: WebChromeClient.CustomViewCallback? = null
     private var webPic: String? = null
     private var isCloudflareChallenge = false
+    private var isFullScreen = false
     private val saveImage = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
             ACache.get().put(imagePathKey, uri.toString())
@@ -57,6 +79,22 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                 binding.webView.loadDataWithBaseURL(url, html, "text/html", "utf-8", url)
             }
         }
+        onBackPressedDispatcher.addCallback(this) {
+            if (binding.customWebView.size > 0) {
+                customWebViewCallback?.onCustomViewHidden()
+                return@addCallback
+            } else if (binding.webView.canGoBack()
+                && binding.webView.copyBackForwardList().size > 1
+            ) {
+                binding.webView.goBack()
+                return@addCallback
+            }
+            if (isFullScreen) {
+                toggleFullScreen()
+                return@addCallback
+            }
+            finish()
+        }
     }
 
     override fun onCompatCreateOptionsMenu(menu: Menu): Boolean {
@@ -70,15 +108,49 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
             R.id.menu_copy_url -> sendToClip(viewModel.baseUrl)
             R.id.menu_ok -> {
                 if (viewModel.sourceVerificationEnable) {
-                    viewModel.saveVerificationResult(intent) {
+                    viewModel.saveVerificationResult(binding.webView) {
                         finish()
                     }
                 } else {
                     finish()
                 }
             }
+
+            R.id.menu_full_screen -> toggleFullScreen()
         }
         return super.onCompatOptionsItemSelected(item)
+    }
+
+    //实现starBrowser调起页面全屏
+    private fun toggleFullScreen() {
+        isFullScreen = !isFullScreen
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // For API 30 and above
+            val windowInsetsController = window.insetsController
+            windowInsetsController?.let {
+                if (isFullScreen) {
+                    it.systemBarsBehavior =
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    it.hide(WindowInsets.Type.systemBars())
+                    supportActionBar?.hide()
+                } else {
+                    it.show(WindowInsets.Type.systemBars())
+                    supportActionBar?.show()
+                }
+            }
+        } else {
+            // For older APIs
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (isFullScreen) {
+                (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        or View.SYSTEM_UI_FLAG_FULLSCREEN
+                        or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION)
+            } else {
+                View.SYSTEM_UI_FLAG_VISIBLE
+            }
+            supportActionBar?.let { if (isFullScreen) it.hide() else it.show() }
+        }
     }
 
     @SuppressLint("JavascriptInterface", "SetJavaScriptEnabled")
@@ -100,8 +172,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                 userAgentString = it
             }
         }
-        val cookieManager = CookieManager.getInstance()
-        cookieManager.setCookie(url, CookieStore.getCookie(url))
+        AppCookieManager.applyToWebView(url)
         binding.webView.addJavascriptInterface(this, "app")
         binding.webView.setOnLongClickListener {
             val hitTestResult = binding.webView.hitTestResult
@@ -145,35 +216,12 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
         }
     }
 
-    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_BACK -> {
-                finish()
-                return true
-            }
-        }
-        return super.onKeyLongPress(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        event?.let {
-            when (keyCode) {
-                KeyEvent.KEYCODE_BACK -> if (event.isTracking && !event.isCanceled && binding.webView.canGoBack()) {
-                    if (binding.customWebView.size > 0) {
-                        customWebViewCallback?.onCustomViewHidden()
-                        return true
-                    } else if (binding.webView.copyBackForwardList().size > 1) {
-                        binding.webView.goBack()
-                        return true
-                    }
-                }
-            }
-        }
-        return super.onKeyUp(keyCode, event)
+    override fun finish() {
+        SourceVerificationHelp.checkResult(viewModel.sourceOrigin)
+        super.finish()
     }
 
     override fun onDestroy() {
-        SourceVerificationHelp.checkResult()
         super.onDestroy()
         binding.webView.destroy()
     }
@@ -191,12 +239,16 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
             binding.llView.invisible()
             binding.customWebView.addView(view)
             customWebViewCallback = callback
+            keepScreenOn(true)
+            toggleNavigationBar(false)
         }
 
         override fun onHideCustomView() {
             binding.customWebView.removeAllViews()
             binding.llView.visible()
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            keepScreenOn(false)
+            toggleNavigationBar(true)
         }
     }
 
@@ -235,7 +287,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                     if (it == "true") {
                         isCloudflareChallenge = true
                     } else if (isCloudflareChallenge && viewModel.sourceVerificationEnable) {
-                        viewModel.saveVerificationResult(intent) {
+                        viewModel.saveVerificationResult(binding.webView) {
                             finish()
                         }
                     }
@@ -257,7 +309,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                 }
 
                 else -> {
-                    binding.root.longSnackbar("跳转其它应用", "确认") {
+                    binding.root.longSnackbar(R.string.jump_to_another_app, R.string.confirm) {
                         openUrl(url)
                     }
                     return true

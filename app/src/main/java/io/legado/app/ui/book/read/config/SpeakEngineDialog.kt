@@ -8,11 +8,13 @@ import android.view.ViewGroup
 import android.widget.RadioButton
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.base.adapter.RecyclerAdapter
+import io.legado.app.constant.AppLog
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.databinding.DialogEditTextBinding
@@ -28,15 +30,31 @@ import io.legado.app.model.ReadBook
 import io.legado.app.ui.association.ImportHttpTtsDialog
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.login.SourceLoginActivity
-import io.legado.app.utils.*
+import io.legado.app.utils.ACache
+import io.legado.app.utils.GSON
+import io.legado.app.utils.applyTint
+import io.legado.app.utils.fromJsonObject
+import io.legado.app.utils.gone
+import io.legado.app.utils.isAbsUrl
+import io.legado.app.utils.isJsonObject
+import io.legado.app.utils.sendToClip
+import io.legado.app.utils.setEdgeEffectColor
+import io.legado.app.utils.setLayout
+import io.legado.app.utils.showDialogFragment
+import io.legado.app.utils.splitNotBlank
+import io.legado.app.utils.startActivity
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import io.legado.app.utils.visible
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 
 /**
  * tts引擎管理
  */
-class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.dialog_recycler_view),
+class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
     Toolbar.OnMenuItemClickListener {
 
     private val binding by viewBinding(DialogRecyclerViewBinding::bind)
@@ -45,6 +63,7 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
     private val adapter by lazy { Adapter(requireContext()) }
     private var ttsEngine: String? = ReadAloud.ttsEngine
     private val sysTtsViews = arrayListOf<RadioButton>()
+    private val callBack: CallBack? get() = parentFragment as? CallBack
     private val importDocResult = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
             viewModel.importLocal(uri)
@@ -85,6 +104,22 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
         recyclerView.setEdgeEffectColor(primaryColor)
         recyclerView.layoutManager = LinearLayoutManager(requireContext())
         recyclerView.adapter = adapter
+        adapter.addHeaderView {
+            ItemHttpTtsBinding.inflate(layoutInflater, recyclerView, false).apply {
+                sysTtsViews.add(cbName)
+                ivEdit.gone()
+                ivMenuDelete.gone()
+                labelSys.visible()
+                cbName.text = "系统默认"
+                cbName.tag = ""
+                cbName.isChecked = ttsEngine == null || ttsEngine!!.isJsonObject()
+                        && GSON.fromJsonObject<SelectItem<String>>(ttsEngine)
+                    .getOrNull()?.value.isNullOrEmpty()
+                cbName.setOnClickListener {
+                    upTts(GSON.toJson(SelectItem("系统默认", "")))
+                }
+            }
+        }
         viewModel.sysEngines.forEach { engine ->
             adapter.addHeaderView {
                 ItemHttpTtsBinding.inflate(layoutInflater, recyclerView, false).apply {
@@ -106,7 +141,7 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
         tvFooterLeft.visible()
         tvFooterLeft.setOnClickListener {
             ReadBook.book?.setTtsEngine(ttsEngine)
-            callBack.upSpeakEngineSummary()
+            callBack?.upSpeakEngineSummary()
             ReadAloud.upReadAloudClass()
             dismissAllowingStateLoss()
         }
@@ -115,7 +150,7 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
         tvOk.setOnClickListener {
             ReadBook.book?.setTtsEngine(null)
             AppConfig.ttsEngine = ttsEngine
-            callBack.upSpeakEngineSummary()
+            callBack?.upSpeakEngineSummary()
             ReadAloud.upReadAloudClass()
             dismissAllowingStateLoss()
         }
@@ -132,8 +167,10 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
     }
 
     private fun initData() {
-        launch {
-            appDb.httpTTSDao.flowAll().conflate().collect {
+        lifecycleScope.launch {
+            appDb.httpTTSDao.flowAll().catch {
+                AppLog.put("朗读引擎界面获取数据失败\n${it.localizedMessage}", it)
+            }.flowOn(IO).conflate().collect {
                 adapter.setItems(it)
             }
         }
@@ -147,6 +184,7 @@ class SpeakEngineDialog(val callBack: CallBack) : BaseDialogFragment(R.layout.di
                 mode = HandleFileContract.FILE
                 allowExtensions = arrayOf("txt", "json")
             }
+
             R.id.menu_import_onLine -> importAlert()
             R.id.menu_export -> exportDirResult.launch {
                 mode = HandleFileContract.EXPORT
