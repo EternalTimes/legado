@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.base.BaseViewModel
@@ -48,7 +49,7 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         binding.toolBar.title = ReadBook.curTextChapter?.title
         initMenu()
         binding.toolBar.setOnClickListener {
-            launch {
+            lifecycleScope.launch {
                 val book = ReadBook.book ?: return@launch
                 val chapter = withContext(IO) {
                     appDb.bookChapterDao.getChapter(book.bookUrl, ReadBook.durChapterIndex)
@@ -58,9 +59,9 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
         }
         viewModel.loadStateLiveData.observe(viewLifecycleOwner) {
             if (it) {
-                binding.rlLoading.show()
+                binding.rlLoading.visible()
             } else {
-                binding.rlLoading.hide()
+                binding.rlLoading.gone()
             }
         }
         viewModel.initContent {
@@ -103,9 +104,9 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
             setCustomView(alertBinding.root)
             okButton {
                 chapter.title = alertBinding.editView.text.toString()
-                launch {
+                lifecycleScope.launch {
                     withContext(IO) {
-                        appDb.bookChapterDao.upDate(chapter)
+                        appDb.bookChapterDao.update(chapter)
                     }
                     binding.toolBar.title = chapter.getDisplayTitle()
                     ReadBook.loadContent(ReadBook.durChapterIndex, resetPageOffset = false)
@@ -152,7 +153,7 @@ class ContentEditDialog : BaseDialogFragment(R.layout.dialog_content_edit) {
                     val contentProcessor = ContentProcessor.get(book.name, book.origin)
                     val content = BookHelp.getContent(book, chapter) ?: return@let null
                     contentProcessor.getContent(book, chapter, content, includeTitle = false)
-                        .joinToString("\n")
+                        .toString()
                 }
             }.onStart {
                 loadStateLiveData.postValue(true)

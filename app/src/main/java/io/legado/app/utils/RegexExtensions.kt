@@ -1,11 +1,16 @@
 package io.legado.app.utils
 
 import androidx.core.os.postDelayed
-import com.script.SimpleBindings
-import io.legado.app.constant.AppConst
+import com.script.ScriptBindings
+import com.script.rhino.RhinoScriptEngine
 import io.legado.app.exception.RegexTimeoutException
 import io.legado.app.help.CrashHandler
+import io.legado.app.help.coroutine.Coroutine
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
+import splitties.init.appCtx
+import java.util.regex.Matcher
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -13,45 +18,51 @@ private val handler by lazy { buildMainHandler() }
 
 /**
  * 带有超时检测的正则替换
- * 超时重启apk,线程不能强制结束,只能重启apk
  */
-suspend fun CharSequence.replace(regex: Regex, replacement: String, timeout: Long): String {
-    val charSequence = this
-    return suspendCancellableCoroutine { block ->
-        val thread = Thread {
-            try {
-                if (replacement.startsWith("@js:")) {
-                    val js = replacement.substring(4)
+fun CharSequence.replace(regex: Regex, replacement: String, timeout: Long): String {
+    val charSequence = this@replace
+    val isJs = replacement.startsWith("@js:")
+    val replacement1 = if (isJs) replacement.substring(4) else replacement
+    return runBlocking {
+        suspendCancellableCoroutine { block ->
+            val coroutine = Coroutine.async(executeContext = IO) {
+                try {
                     val pattern = regex.toPattern()
                     val matcher = pattern.matcher(charSequence)
                     val stringBuffer = StringBuffer()
                     while (matcher.find()) {
-                        val bindings = SimpleBindings()
-                        bindings["result"] = matcher.group()
-                        val jsResult = AppConst.SCRIPT_ENGINE.eval(js, bindings).toString()
-                        matcher.appendReplacement(stringBuffer, jsResult)
+                        if (isJs) {
+                            val jsResult = RhinoScriptEngine.run {
+                                val bindings = ScriptBindings()
+                                bindings["result"] = matcher.group()
+                                eval(replacement1, bindings)
+                            }.toString()
+                            val quotedResult = Matcher.quoteReplacement(jsResult)
+                            matcher.appendReplacement(stringBuffer, quotedResult)
+                        } else {
+                            matcher.appendReplacement(stringBuffer, replacement1)
+                        }
                     }
                     matcher.appendTail(stringBuffer)
                     block.resume(stringBuffer.toString())
-                } else {
-                    val result = regex.replace(charSequence, replacement)
-                    block.resume(result)
+                } catch (e: Exception) {
+                    block.resumeWithException(e)
                 }
-            } catch (e: Exception) {
-                block.resumeWithException(e)
             }
-        }
-        thread.start()
-        handler.postDelayed(timeout) {
-            if (thread.isAlive) {
-                runCatching {
-                    @Suppress("DEPRECATION")
-                    thread.stop()
+            handler.postDelayed(timeout) {
+                if (coroutine.isActive) {
+                    val timeoutMsg =
+                        "替换超时,3秒后还未结束将重启应用\n替换规则$regex\n替换内容:$charSequence"
+                    val exception = RegexTimeoutException(timeoutMsg)
+                    block.cancel(exception)
+                    appCtx.longToastOnUi(timeoutMsg)
+                    CrashHandler.saveCrashInfo2File(exception)
+                    handler.postDelayed(3000) {
+                        if (coroutine.isActive) {
+                            appCtx.restart()
+                        }
+                    }
                 }
-                val timeoutMsg = "替换超时,将禁用替换规则"
-                val exception = RegexTimeoutException(timeoutMsg)
-                block.cancel(exception)
-                CrashHandler.saveCrashInfo2File(exception)
             }
         }
     }

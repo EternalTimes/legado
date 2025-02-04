@@ -156,7 +156,6 @@
         <LinearLayout
             android:layout_weight="1.0"
             android:orientation="vertical"
-            android:fitsSystemWindows="true"
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
@@ -373,6 +372,7 @@
                         android:paddingBottom="8dp"
                         android:text="@string/book_intro"
                         android:textColor="@color/secondaryText"
+                        android:textIsSelectable="true"
                         android:textSize="14sp"
                         android:visibility="visible"
                         tools:ignore="RtlHardcoded,RtlSymmetry" />

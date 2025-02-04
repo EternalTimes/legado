@@ -3,12 +3,12 @@ package io.legado.app.ui.book.read.page.delegate
 import android.graphics.Canvas
 import android.view.MotionEvent
 import android.view.VelocityTracker
+import io.legado.app.data.entities.Book
 import io.legado.app.help.book.isImage
 import io.legado.app.model.ReadBook
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 
-@Suppress("UnnecessaryVariable")
 class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
     // 滑动追踪的时间
@@ -16,8 +16,12 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
     //速度追踪器
     private val mVelocity: VelocityTracker = VelocityTracker.obtain()
+    private val slopSquare get() = readView.pageSlopSquare2
+
+    var noAnim: Boolean = false
 
     override fun onAnimStart(animationSpeed: Int) {
+        readView.onScrollAnimStart()
         //惯性滚动
         fling(
             0, touchY.toInt(), 0, mVelocity.yVelocity.toInt(),
@@ -26,18 +30,33 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
     }
 
     override fun onAnimStop() {
-        // nothing
+        readView.onScrollAnimStop()
     }
 
     override fun onTouch(event: MotionEvent) {
+        //在多点触控时，事件不走ACTION_DOWN分支而产生的特殊事件处理
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            //当多个手指同时按下的情况，将最后一个按下的手指的坐标设置为起始坐标，所以只有最后一个手指的滑动事件被处理
+            readView.setStartPoint(
+                event.getX(event.pointerCount - 1),
+                event.getY(event.pointerCount - 1),
+                false
+            )
+        } else if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+            //当多个手指同时按下的情况，当抬起一个手指时，起始坐标恢复为第一次按下的手指的坐标
+            readView.setStartPoint(event.x, event.y, false)
+            return
+        }
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 abortAnim()
                 mVelocity.clear()
             }
+
             MotionEvent.ACTION_MOVE -> {
                 onScroll(event)
             }
+
             MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP -> {
                 onAnimStart(readView.defaultAnimationSpeed)
             }
@@ -55,31 +74,33 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
     private fun onScroll(event: MotionEvent) {
         mVelocity.addMovement(event)
         mVelocity.computeCurrentVelocity(velocityDuration)
-        val action: Int = event.action
-        val pointerUp =
-            action and MotionEvent.ACTION_MASK == MotionEvent.ACTION_POINTER_UP
-        val skipIndex = if (pointerUp) event.actionIndex else -1
-        // Determine focal point
-        var sumX = 0f
-        var sumY = 0f
-        val count: Int = event.pointerCount
-        for (i in 0 until count) {
-            if (skipIndex == i) continue
-            sumX += event.getX(i)
-            sumY += event.getY(i)
+        //取最后添加(即最新的)一个触摸点来计算滚动位置
+        //多点触控时即最后按下的手指产生的事件点
+        val pointX = event.getX(event.pointerCount - 1)
+        val pointY = event.getY(event.pointerCount - 1)
+        if (isMoved || readView.isLongScreenShot()) {
+            readView.setTouchPoint(pointX, pointY, false)
         }
-        val div = if (pointerUp) count - 1 else count
-        val focusX = sumX / div
-        val focusY = sumY / div
-        readView.setTouchPoint(sumX, sumY)
         if (!isMoved) {
-            val deltaX = (focusX - startX).toInt()
-            val deltaY = (focusY - startY).toInt()
+            val deltaX = (pointX - startX).toInt()
+            val deltaY = (pointY - startY).toInt()
             val distance = deltaX * deltaX + deltaY * deltaY
-            isMoved = distance > readView.slopSquare
+            isMoved = distance > slopSquare
+            if (isMoved) {
+                readView.setStartPoint(event.x, event.y, false)
+            }
         }
         if (isMoved) {
             isRunning = true
+        }
+    }
+
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) {
+            readView.setTouchPoint(scroller.currX.toFloat(), scroller.currY.toFloat(), false)
+        } else if (isStarted) {
+            onAnimStop()
+            stopScroll()
         }
     }
 
@@ -89,6 +110,7 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
     }
 
     override fun abortAnim() {
+        readView.onScrollAnimStop()
         isStarted = false
         isMoved = false
         isRunning = false
@@ -102,6 +124,11 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
     override fun nextPageByAnim(animationSpeed: Int) {
         if (readView.isAbortAnim) {
+            readView.isAbortAnim = false
+            return
+        }
+        if (noAnim) {
+            curPage.scroll(calcNextPageOffset())
             return
         }
         readView.setStartPoint(0f, 0f, false)
@@ -110,6 +137,11 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
     override fun prevPageByAnim(animationSpeed: Int) {
         if (readView.isAbortAnim) {
+            readView.isAbortAnim = false
+            return
+        }
+        if (noAnim) {
+            curPage.scroll(calcPrevPageOffset())
             return
         }
         readView.setStartPoint(0f, 0f, false)
@@ -122,11 +154,13 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
      */
     private fun calcNextPageOffset(): Int {
         val visibleHeight = ChapterProvider.visibleHeight
-        if (ReadBook.book?.isImage == true) {
+        val book = ReadBook.book
+        if (book == null || book.isImage) {
             return -visibleHeight
         }
         val visiblePage = readView.getCurVisiblePage()
-        if (visiblePage.isImageOrEmpty()) {
+        val isTextStyle = book.getImageStyle().equals(Book.imgStyleText, true)
+        if (!isTextStyle && visiblePage.hasImageOrEmpty()) {
             return -visibleHeight
         }
         val lastLineTop = visiblePage.lines.last().lineTop.toInt()
@@ -136,11 +170,13 @@ class ScrollPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
     private fun calcPrevPageOffset(): Int {
         val visibleHeight = ChapterProvider.visibleHeight
-        if (ReadBook.book?.isImage == true) {
+        val book = ReadBook.book
+        if (book == null || book.isImage) {
             return visibleHeight
         }
         val visiblePage = readView.getCurVisiblePage()
-        if (visiblePage.isImageOrEmpty()) {
+        val isTextStyle = book.getImageStyle().equals(Book.imgStyleText, true)
+        if (!isTextStyle && visiblePage.hasImageOrEmpty()) {
             return visibleHeight
         }
         val firstLineBottom = visiblePage.lines.first().lineBottom.toInt()
