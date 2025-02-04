@@ -178,6 +178,7 @@ dependencies {
     implementation(libs.renderscript.intrinsics.replacement.toolkit)
 
     //androidX
+
     implementation(libs.core.ktx)
     implementation(libs.appcompat.appcompat)
     implementation(libs.activity.ktx)
@@ -188,6 +189,7 @@ dependencies {
     implementation(libs.androidx.recyclerview)
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.webkit)
+
 
     //google
     implementation(libs.material)
