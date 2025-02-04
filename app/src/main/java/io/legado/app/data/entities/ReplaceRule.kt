@@ -4,9 +4,15 @@ import android.os.Parcelable
 import android.text.TextUtils
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Ignore
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import io.legado.app.R
+import io.legado.app.constant.AppLog
+import io.legado.app.exception.NoStackTraceException
+import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
+import splitties.init.appCtx
 import java.util.regex.Pattern
 import java.util.regex.PatternSyntaxException
 
@@ -37,6 +43,8 @@ data class ReplaceRule(
     //作用于正文
     @ColumnInfo(defaultValue = "1")
     var scopeContent: Boolean = true,
+    //排除范围
+    var excludeScope: String? = null,
     //是否启用
     @ColumnInfo(defaultValue = "1")
     var isEnabled: Boolean = true,
@@ -62,6 +70,13 @@ data class ReplaceRule(
         return id.hashCode()
     }
 
+    @delegate:Transient
+    @delegate:Ignore
+    @IgnoredOnParcel
+    val regex: Regex by lazy {
+        pattern.toRegex()
+    }
+
     fun getDisplayNameGroup(): String {
         return if (group.isNullOrBlank()) {
             name
@@ -79,10 +94,22 @@ data class ReplaceRule(
             try {
                 Pattern.compile(pattern)
             } catch (ex: PatternSyntaxException) {
+                AppLog.put("正则语法错误或不支持：${ex.localizedMessage}", ex)
+                return false
+            }
+            // Pattern.compile测试通过，但是部分情况下会替换超时，报错，一般发生在修改表达式时漏删了
+            if (pattern.endsWith('|') && !pattern.endsWith("\\|")) {
                 return false
             }
         }
         return true
+    }
+
+    @Throws(NoStackTraceException::class)
+    fun checkValid() {
+        if (!isValid()) {
+            throw NoStackTraceException(appCtx.getString(R.string.replace_rule_invalid))
+        }
     }
 
     fun getValidTimeoutMillisecond(): Long {

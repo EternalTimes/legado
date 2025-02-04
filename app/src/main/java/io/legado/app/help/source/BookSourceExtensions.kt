@@ -1,8 +1,14 @@
 package io.legado.app.help.source
 
 import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.BookSourcePart
 import io.legado.app.data.entities.rule.ExploreKind
-import io.legado.app.utils.*
+import io.legado.app.utils.ACache
+import io.legado.app.utils.GSON
+import io.legado.app.utils.MD5Utils
+import io.legado.app.utils.fromJsonArray
+import io.legado.app.utils.isJsonArray
+import io.legado.app.utils.printOnDebug
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,6 +27,14 @@ private fun BookSource.getExploreKindsKey(): String {
     return MD5Utils.md5Encode(bookSourceUrl + exploreUrl)
 }
 
+private fun BookSourcePart.getExploreKindsKey(): String {
+    return getBookSource()!!.getExploreKindsKey()
+}
+
+suspend fun BookSourcePart.exploreKinds(): List<ExploreKind> {
+    return getBookSource()!!.exploreKinds()
+}
+
 suspend fun BookSource.exploreKinds(): List<ExploreKind> {
     val exploreKindsKey = getExploreKindsKey()
     exploreKindsMap[exploreKindsKey]?.let { return it }
@@ -35,8 +49,8 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
         withContext(Dispatchers.IO) {
             kotlin.runCatching {
                 var ruleStr = exploreUrl
-                if (exploreUrl.startsWith("<js>", false)
-                    || exploreUrl.startsWith("@js:", false)
+                if (exploreUrl.startsWith("<js>", true)
+                    || exploreUrl.startsWith("@js:", true)
                 ) {
                     ruleStr = aCache.getAsString(exploreKindsKey)
                     if (ruleStr.isNullOrBlank()) {
@@ -50,8 +64,8 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
                     }
                 }
                 if (ruleStr.isJsonArray()) {
-                    GSON.fromJsonArray<ExploreKind>(ruleStr).getOrThrow()?.let {
-                        kinds.addAll(it)
+                    GSON.fromJsonArray<ExploreKind?>(ruleStr).getOrThrow().let {
+                        kinds.addAll(it.filterNotNull())
                     }
                 } else {
                     ruleStr.split("(&&|\n)+".toRegex()).forEach { kindStr ->
@@ -69,10 +83,10 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
     }
 }
 
-suspend fun BookSource.clearExploreKindsCache() {
+suspend fun BookSourcePart.clearExploreKindsCache() {
     withContext(Dispatchers.IO) {
         val exploreKindsKey = getExploreKindsKey()
         aCache.remove(exploreKindsKey)
-        exploreKindsMap.remove(getExploreKindsKey())
+        exploreKindsMap.remove(exploreKindsKey)
     }
 }

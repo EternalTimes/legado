@@ -5,7 +5,12 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.utils.ACache
+import io.legado.app.utils.FileUtils
 import io.legado.app.utils.GSON
+import io.legado.app.utils.compress.ZipUtils
+import io.legado.app.utils.createFileReplace
+import io.legado.app.utils.externalCache
+import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.fromJsonObject
 import splitties.init.appCtx
 import java.io.File
@@ -16,9 +21,12 @@ object DirectLinkUpload {
     const val ruleFileName = "directLinkUploadRule.json"
 
     @Throws(NoStackTraceException::class)
-    suspend fun upLoad(fileName: String, file: Any, contentType: String): String {
-        val rule = getRule()
-        rule ?: throw NoStackTraceException("直链上传规则未配置")
+    suspend fun upLoad(
+        fileName: String,
+        file: Any,
+        contentType: String,
+        rule: Rule = getRule()
+    ): String {
         val url = rule.uploadUrl
         if (url.isBlank()) {
             throw NoStackTraceException("上传url未配置")
@@ -27,8 +35,30 @@ object DirectLinkUpload {
         if (downloadUrlRule.isBlank()) {
             throw NoStackTraceException("下载地址规则未配置")
         }
+        var mFileName = fileName
+        var mFile = file
+        var mContentType = contentType
+        if (rule.compress && contentType != "application/zip") {
+            mFileName = "$fileName.zip"
+            mContentType = "application/zip"
+            mFile = when (file) {
+                is File -> {
+                    val zipFile = File(FileUtils.getPath(appCtx.externalCache, "upload", mFileName))
+                    zipFile.createFileReplace()
+                    ZipUtils.zipFile(file, zipFile)
+                    zipFile
+                }
+
+                is ByteArray -> ZipUtils.zipByteArray(file, fileName)
+                is String -> ZipUtils.zipByteArray(file.toByteArray(), fileName)
+                else -> ZipUtils.zipByteArray(GSON.toJson(file).toByteArray(), fileName)
+            }
+        }
         val analyzeUrl = AnalyzeUrl(url)
-        val res = analyzeUrl.upload(fileName, file, contentType)
+        val res = analyzeUrl.upload(mFileName, mFile, mContentType)
+        if (mFile is File) {
+            mFile.delete()
+        }
         val analyzeRule = AnalyzeRule().setContent(res.body, res.url)
         val downloadUrl = analyzeRule.getString(downloadUrlRule)
         if (downloadUrl.isBlank()) {
@@ -37,16 +67,16 @@ object DirectLinkUpload {
         return downloadUrl
     }
 
-    private val defaultRule: Rule? by lazy {
+    val defaultRules: List<Rule> by lazy {
         val json = String(
             appCtx.assets.open("defaultData${File.separator}directLinkUpload.json")
                 .readBytes()
         )
-        GSON.fromJsonObject<Rule>(json).getOrNull()
+        GSON.fromJsonArray<Rule>(json).getOrThrow()
     }
 
-    fun getRule(): Rule? {
-        return getConfig() ?: defaultRule
+    fun getRule(): Rule {
+        return getConfig() ?: defaultRules[0]
     }
 
     fun getConfig(): Rule? {
@@ -54,8 +84,7 @@ object DirectLinkUpload {
         return GSON.fromJsonObject<Rule>(json).getOrNull()
     }
 
-    fun putConfig(uploadUrl: String, downloadUrlRule: String, summary: String?) {
-        val rule = Rule(uploadUrl, downloadUrlRule, summary)
+    fun putConfig(rule: Rule) {
         ACache.get(cacheDir = false).put(ruleFileName, GSON.toJson(rule))
     }
 
@@ -63,15 +92,22 @@ object DirectLinkUpload {
         ACache.get(cacheDir = false).remove(ruleFileName)
     }
 
-    fun getSummary(): String? {
-        return getRule()?.summary
+    fun getSummary(): String {
+        return getRule().summary
     }
 
     @Keep
     data class Rule(
-        var uploadUrl: String,
-        var downloadUrlRule: String,
-        var summary: String?
-    )
+        var uploadUrl: String, //上传url
+        var downloadUrlRule: String, //下载链接规则
+        var summary: String, //注释
+        var compress: Boolean = false, //是否压缩
+    ) {
+
+        override fun toString(): String {
+            return summary
+        }
+
+    }
 
 }

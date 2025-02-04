@@ -1,17 +1,17 @@
 package io.legado.app.ui.book.read.page.delegate
 
-import android.graphics.Bitmap
 import android.view.MotionEvent
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.entities.PageDirection
+import io.legado.app.utils.canvasrecorder.CanvasRecorderFactory
 import io.legado.app.utils.screenshot
 
 abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readView) {
 
-    protected var curBitmap: Bitmap? = null
-    protected var prevBitmap: Bitmap? = null
-    protected var nextBitmap: Bitmap? = null
-    protected val slopSquare by lazy { readView.slopSquare * readView.slopSquare }
+    protected var curRecorder = CanvasRecorderFactory.create()
+    protected var prevRecorder = CanvasRecorderFactory.create()
+    protected var nextRecorder = CanvasRecorderFactory.create()
+    private val slopSquare get() = readView.pageSlopSquare2
 
     override fun setDirection(direction: PageDirection) {
         super.setDirection(direction)
@@ -21,19 +21,26 @@ abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readVie
     open fun setBitmap() {
         when (mDirection) {
             PageDirection.PREV -> {
-                prevBitmap?.recycle()
-                prevBitmap = prevPage.screenshot()
-                curBitmap?.recycle()
-                curBitmap = curPage.screenshot()
+                prevPage.screenshot(prevRecorder)
+                curPage.screenshot(curRecorder)
             }
+
             PageDirection.NEXT -> {
-                nextBitmap?.recycle()
-                nextBitmap = nextPage.screenshot()
-                curBitmap?.recycle()
-                curBitmap = curPage.screenshot()
+                nextPage.screenshot(nextRecorder)
+                curPage.screenshot(curRecorder)
             }
+
             else -> Unit
         }
+    }
+
+    fun upRecorder() {
+        curRecorder.recycle()
+        prevRecorder.recycle()
+        nextRecorder.recycle()
+        curRecorder = CanvasRecorderFactory.create()
+        prevRecorder = CanvasRecorderFactory.create()
+        nextRecorder = CanvasRecorderFactory.create()
     }
 
     override fun onTouch(event: MotionEvent) {
@@ -41,9 +48,11 @@ abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readVie
             MotionEvent.ACTION_DOWN -> {
                 abortAnim()
             }
+
             MotionEvent.ACTION_MOVE -> {
                 onScroll(event)
             }
+
             MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP -> {
                 onAnimStart(readView.defaultAnimationSpeed)
             }
@@ -89,6 +98,7 @@ abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readVie
                     }
                     setDirection(PageDirection.NEXT)
                 }
+                readView.setStartPoint(event.x, event.y, false)
             }
         }
         if (isMoved) {
@@ -120,7 +130,7 @@ abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readVie
         if (!hasNext()) return
         setDirection(PageDirection.NEXT)
         val y = when {
-            viewHeight / 2 < startY -> viewHeight.toFloat() * 0.9f
+            startY > viewHeight / 2 -> viewHeight.toFloat() * 0.9f
             else -> 1f
         }
         readView.setStartPoint(viewWidth.toFloat() * 0.9f, y, false)
@@ -137,12 +147,9 @@ abstract class HorizontalPageDelegate(readView: ReadView) : PageDelegate(readVie
 
     override fun onDestroy() {
         super.onDestroy()
-        prevBitmap?.recycle()
-        prevBitmap = null
-        curBitmap?.recycle()
-        curBitmap = null
-        nextBitmap?.recycle()
-        nextBitmap = null
+        prevRecorder.recycle()
+        curRecorder.recycle()
+        nextRecorder.recycle()
     }
 
 }

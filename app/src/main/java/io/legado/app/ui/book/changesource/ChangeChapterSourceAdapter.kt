@@ -13,6 +13,7 @@ import io.legado.app.base.adapter.DiffRecyclerAdapter
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.databinding.ItemChangeSourceBinding
+import io.legado.app.help.config.AppConfig
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.gone
 import io.legado.app.utils.invisible
@@ -49,26 +50,30 @@ class ChangeChapterSourceAdapter(
         item: SearchBook,
         payloads: MutableList<Any>
     ) {
-        val bundle = payloads.getOrNull(0) as? Bundle
         binding.apply {
-            if (bundle == null) {
+            if (payloads.isEmpty()) {
                 tvOrigin.text = item.originName
                 tvAuthor.text = item.author
                 tvLast.text = item.getDisplayLastChapterTitle()
-                if (callBack.bookUrl == item.bookUrl) {
+                tvCurrentChapterWordCount.text = item.chapterWordCountText
+                tvRespondTime.text = context.getString(R.string.respondTime, item.respondTime)
+                if (callBack.oldBookUrl == item.bookUrl) {
                     ivChecked.visible()
                 } else {
                     ivChecked.invisible()
                 }
             } else {
-                bundle.keySet().map {
-                    when (it) {
-                        "name" -> tvOrigin.text = item.originName
-                        "latest" -> tvLast.text = item.getDisplayLastChapterTitle()
-                        "upCurSource" -> if (callBack.bookUrl == item.bookUrl) {
-                            ivChecked.visible()
-                        } else {
-                            ivChecked.invisible()
+                for (i in payloads.indices) {
+                    val bundle = payloads[i] as Bundle
+                    bundle.keySet().map {
+                        when (it) {
+                            "name" -> tvOrigin.text = item.originName
+                            "latest" -> tvLast.text = item.getDisplayLastChapterTitle()
+                            "upCurSource" -> if (callBack.oldBookUrl == item.bookUrl) {
+                                ivChecked.visible()
+                            } else {
+                                ivChecked.invisible()
+                            }
                         }
                     }
                 }
@@ -82,13 +87,37 @@ class ChangeChapterSourceAdapter(
             } else if (score < 0) {
                 binding.ivGood.gone()
                 binding.ivBad.visible()
-                DrawableCompat.setTint(binding.ivGood.drawable, appCtx.getCompatColor(R.color.md_red_100))
-                DrawableCompat.setTint(binding.ivBad.drawable, appCtx.getCompatColor(R.color.md_blue_A200))
+                DrawableCompat.setTint(
+                    binding.ivGood.drawable,
+                    appCtx.getCompatColor(R.color.md_red_100)
+                )
+                DrawableCompat.setTint(
+                    binding.ivBad.drawable,
+                    appCtx.getCompatColor(R.color.md_blue_A200)
+                )
             } else {
                 binding.ivGood.visible()
                 binding.ivBad.visible()
-                DrawableCompat.setTint(binding.ivGood.drawable, appCtx.getCompatColor(R.color.md_red_100))
-                DrawableCompat.setTint(binding.ivBad.drawable, appCtx.getCompatColor(R.color.md_blue_100))
+                DrawableCompat.setTint(
+                    binding.ivGood.drawable,
+                    appCtx.getCompatColor(R.color.md_red_100)
+                )
+                DrawableCompat.setTint(
+                    binding.ivBad.drawable,
+                    appCtx.getCompatColor(R.color.md_blue_100)
+                )
+            }
+
+            if (AppConfig.changeSourceLoadWordCount && !item.chapterWordCountText.isNullOrBlank()) {
+                tvCurrentChapterWordCount.visible()
+            } else {
+                tvCurrentChapterWordCount.gone()
+            }
+
+            if (AppConfig.changeSourceLoadWordCount && item.respondTime >= 0) {
+                tvRespondTime.visible()
+            } else {
+                tvRespondTime.gone()
             }
         }
     }
@@ -163,7 +192,7 @@ class ChangeChapterSourceAdapter(
     }
 
     interface CallBack {
-        val bookUrl: String?
+        val oldBookUrl: String?
         fun openToc(searchBook: SearchBook)
         fun topSource(searchBook: SearchBook)
         fun bottomSource(searchBook: SearchBook)
