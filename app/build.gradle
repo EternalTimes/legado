@@ -157,10 +157,10 @@ android {
 dependencies {
     //compileOnly "com.android.tools.build:gradle:$agp_version"
     //noinspection GradleDependency,GradlePackageUpdate
-    //coreLibraryDesugaring('com.android.tools:desugar_jdk_libs_nio:2.0.4')
     coreLibraryDesugaring(libs.desugar)
     testImplementation(libs.junit)
     androidTestImplementation(libs.bundles.androidTest)
+
     //kotlin
     //noinspection GradleDependency,DifferentStdlibGradleVersion
     implementation(libs.kotlin.stdlib)
@@ -178,6 +178,7 @@ dependencies {
     implementation(libs.renderscript.intrinsics.replacement.toolkit)
 
     //androidX
+
     implementation(libs.core.ktx)
     implementation(libs.appcompat.appcompat)
     implementation(libs.activity.ktx)
@@ -188,6 +189,7 @@ dependencies {
     implementation(libs.androidx.recyclerview)
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.webkit)
+
 
     //google
     implementation(libs.material)
